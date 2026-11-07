@@ -132,6 +132,11 @@ MUTATIONS = [
              "bad = grounding_check(text, facts)", "bad = []"),
     Mutation("M35", "Send the user's memo to the LLM", "app/sentinel/narrator.py",
              '"amount": hold["amount"],', '"amount": hold["amount"], "memo": hold["memo"],'),
+    # --- public sign-up --------------------------------------------------------------
+    Mutation("M36", "Public sign-up creates administrators", "app/ledger/admin_ops.py",
+             "VALUES (%s, %s, 'holder', %s)", "VALUES (%s, %s, 'admin', %s)"),
+    Mutation("M37", "Remove the sign-up rate limit", "app/api/routes_auth.py",
+             "signup_throttle.attempt(_client_ip(request))", "pass"),
 ]
 
 

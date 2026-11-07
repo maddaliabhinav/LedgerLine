@@ -27,16 +27,54 @@ def _clean_text(value: str, field: str, max_len: int) -> str:
     return value
 
 
-def create_user(actor_id: int | None, username: str, display_name: str, role: str, password: str) -> dict:
+def _new_user_fields(username: str, display_name: str, password: str) -> tuple[str, str, str]:
     username = (username or "").strip().lower()
     if not USERNAME_RE.fullmatch(username):
         raise ValidationFailed("username must be 3-32 characters: a-z 0-9 _ . - (starting with a letter or digit)")
-    if role not in ROLES:
-        raise ValidationFailed(f"role must be one of {', '.join(ROLES)}")
     if len(password or "") < MIN_PASSWORD_LENGTH:
         raise ValidationFailed(f"password must be at least {MIN_PASSWORD_LENGTH} characters")
     display_name = _clean_text(display_name, "display name", 80)
-    password_hash = hash_password(password)          # slow on purpose; done outside the transaction
+    return username, display_name, hash_password(password)   # slow on purpose; outside any transaction
+
+
+def register_holder(username: str, display_name: str, password: str) -> tuple[dict, dict]:
+    """Public self-service sign-up. The role is NOT a parameter: whoever calls
+    this gets an account holder, never an admin or auditor, plus one account
+    that opens at Rs 0 (money only arrives through an admin-recorded deposit).
+    User, account and both journal entries commit together or not at all."""
+    username, display_name, password_hash = _new_user_fields(username, display_name, password)
+    with db.connection() as conn, conn.transaction():
+        cur = conn.cursor()
+        try:
+            with conn.transaction():
+                cur.execute(
+                    "INSERT INTO users (username, display_name, role, password_hash) "
+                    "VALUES (%s, %s, 'holder', %s) "
+                    "RETURNING id, username, display_name, role, is_active, token_version, created_at",
+                    (username, display_name, password_hash))
+        except psycopg.errors.UniqueViolation as exc:
+            raise Conflict(f"username {username} is taken") from exc
+        user = cur.fetchone()
+        append_entry(cur, kind="USER_CREATED", status="info", actor_id=user["id"],
+                     details={"user_id": user["id"], "username": username, "role": user["role"],
+                              "display_name": display_name, "via": "self-service sign-up"})
+        cur.execute(
+            f"INSERT INTO accounts (account_no, owner_id, name, kind) "
+            f"VALUES ('LL-' || nextval('account_no_seq'), %s, 'Main account', 'customer') "
+            f"RETURNING {accounts.ACCOUNT_COLUMNS}", (user["id"],))
+        acct = cur.fetchone()
+        append_entry(cur, kind="ACCOUNT_OPENED", status="info", actor_id=user["id"], account_id=acct["id"],
+                     details={"account_id": acct["id"], "account_no": acct["account_no"], "kind": "customer",
+                              "owner_id": user["id"], "owner_username": username, "name": acct["name"],
+                              "overdraft_limit": 0, "daily_limit": acct["daily_limit"],
+                              "via": "self-service sign-up"})
+    return user, acct
+
+
+def create_user(actor_id: int | None, username: str, display_name: str, role: str, password: str) -> dict:
+    if role not in ROLES:
+        raise ValidationFailed(f"role must be one of {', '.join(ROLES)}")
+    username, display_name, password_hash = _new_user_fields(username, display_name, password)
     with db.connection() as conn, conn.transaction():
         cur = conn.cursor()
         try:

@@ -53,6 +53,7 @@ COMMIT                                 (deferred double-entry check runs here)
 ## Phase 3: auth and the API (`app/api/`, `app/security.py`, `app/main.py`)
 
 * Passwords: stdlib scrypt. Tokens: HS256 JWT with `exp` and a `tv` (token version).
+* Public sign-up (`POST /api/auth/register` → `admin_ops.register_holder`) always creates an account holder with one ₹0 account. The role is hard-coded in the SQL, unknown fields are refused, and sign-ups are rate-limited per address.
 * `deps.current_user` re-reads the user **from the database on every request**: role, `is_active`, `tv`. A demoted or deactivated user's token stops working at once, and a forged `role` claim does nothing.
 * Money routes do **not** pre-filter by role. The engine decides, so every refusal lands in the journal.
 * `schemas.py`: every body is `extra="forbid"` (no mass assignment). Amounts and memos get strict validators.
@@ -78,7 +79,7 @@ Vanilla JS, no build step. It never uses `innerHTML` for data. Each form gets a 
 
 * `hooks.race_window(after_balance_check=0.3)` makes the dangerous interleaving happen every time. `hooks.faults(...)` crashes a request between debit and credit. One test kills the database session mid-transfer.
 * Race tests assert the outcome **and** that the database backstop never fired.
-* `tools/mutation_check.py` removes 35 locks and checks one by one; every removal fails a test (`docs/MUTATION_REPORT.md`).
+* `tools/mutation_check.py` removes 37 locks and checks one by one; every removal fails a test (`docs/MUTATION_REPORT.md`).
 * `tools/attack.py` runs the judges' attacks against a live URL.
 
 ---
@@ -115,7 +116,7 @@ Then:
 python -m app.cli migrate            # schema + signed GENESIS entry
 python -m app.cli seed               # demo people and accounts (prints them)
 uvicorn app.main:app --reload        # open http://localhost:8000
-python -m pytest                     # 115 tests, about 20 s
+python -m pytest                     # 119 tests, about 20 s
 python tools/attack.py               # in a second terminal, while the server runs
 python tools/mutation_check.py      # about 10 minutes; proves the tests bite
 ```
@@ -163,6 +164,9 @@ External money and held money are real accounts, so conservation is one checkabl
 
 **"Can the AI move money?"**
 No. Sentinel only reads and scores. Above the threshold, money waits in suspense for a person. An architecture test fails if the AI package ever imports money code. The LLM writes words only: no memos in, numbers checked out.
+
+**"Can anyone make themselves an admin from the Create user page?"**
+No. `register_holder()` in `admin_ops.py` inserts the role `'holder'` as a constant, and `SignUpIn` refuses unknown fields, so sending `role` gets a 422. Admins and auditors come only from `POST /api/users`, which requires an admin. Tests: `tests/test_signup.py`; mutation M36.
 
 **Likely live-change requests, and where to make them:**
 

@@ -21,7 +21,7 @@ that first added the files. Later entries link the exact fix commit.
 * **What was wrong:** PostgreSQL's JSONB does not keep key order. The first response and the replays carried the same data in a different order, so "the second attempt returns the same answer" held after parsing but not byte for byte. A judge diffing two `curl` outputs would see different responses. Money still moved only once (1 journal entry, 11 replays), which is exactly why this was easy to miss.
 * **How it was caught:** The Race Lab "replay storm" sends one request 12 times with the same key and checks that every body is identical. It reported *"Copies got different answers"* while also showing *1 journal entry, 11 answered from storage*.
 * **What we did instead:** `idempotency_keys.response` became `TEXT` holding the exact serialized response. The first response and every replay send those same bytes (`Outcome.render()`, `routes_money.respond`). Tests now assert byte equality: `test_same_key_twice_moves_money_once_and_returns_the_same_bytes` and, over real HTTP, `test_replayed_request_over_http_returns_identical_bytes`.
-* **Fixed in:** _initial commit — add link after pushing_
+* **Fixed in:** [642ca32](https://github.com/maddaliabhinav/LedgerLine/commit/642ca32dd7be2ae325955a7ad5037f9f2ed76446) (initial commit)
 
 ### 2. 2026-11-06 — Where the balance is checked and the debit is written (money integrity, verified rather than trusted)
 
@@ -33,7 +33,7 @@ that first added the files. Later entries link the exact fix commit.
   2. `tools/mutation_check.py` removes the defences one at a time: the row lock (M01), lock ordering (M02), the chain-head lock (M03), the balance checks (M04/M05), the floor CHECK (M17), the stale-balance tripwire (M18) and the rest. Every mutation made a test fail (see `docs/MUTATION_REPORT.md`).
   3. `tools/attack.py` was run against a server with **two worker processes**: 2×₹600 from ₹1,000 gave `[201, 409]`, and 25×₹100 against ₹400 paid exactly 4.
 * **What we did instead:** Kept the code, added the mutation harness and the race windows so the claim is re-checkable by anyone: `python tools/mutation_check.py`.
-* **Fixed in:** _initial commit — add link after pushing_
+* **Fixed in:** [642ca32](https://github.com/maddaliabhinav/LedgerLine/commit/642ca32dd7be2ae325955a7ad5037f9f2ed76446) (initial commit)
 
 ### 3. 2026-11-06 — Login throttle trusted a header the client controls (security)
 
@@ -42,7 +42,7 @@ that first added the files. Later entries link the exact fix commit.
 * **What was wrong:** The first hop is whatever the client sends. An attacker could put a new fake IP in that header on every request and never hit the limit. A proxy *appends* the real address, so only the **last** hop is trustworthy, and only when there really is a proxy in front.
 * **How it was caught:** Reviewing the code while writing the deployment config (`--proxy-headers` on Render) and asking "who writes this header?"
 * **What we did instead:** Use the last hop, and only when `TRUST_PROXY` is on (default only in production). Recorded as T41 in THREATS.md.
-* **Fixed in:** _initial commit — add link after pushing_
+* **Fixed in:** [642ca32](https://github.com/maddaliabhinav/LedgerLine/commit/642ca32dd7be2ae325955a7ad5037f9f2ed76446) (initial commit)
 
 ### 4. 2026-11-06 — Dependency versions "from memory" that were never tested (deployment)
 
@@ -51,7 +51,7 @@ that first added the files. Later entries link the exact fix commit.
 * **What was wrong:** A clean clone would have installed a different stack than the one the tests passed on. That is exactly the "works on my machine" failure that sinks a deploy on the last day.
 * **How it was caught:** Comparing the pins with `pip list` in the environment where the tests ran.
 * **What we did instead:** Pinned the exact tested versions, created a fresh virtualenv from `requirements-dev.txt` only, ran the full suite inside it, and added `.python-version` (3.13) so Render does not pick its newer default.
-* **Fixed in:** _initial commit — add link after pushing_
+* **Fixed in:** [642ca32](https://github.com/maddaliabhinav/LedgerLine/commit/642ca32dd7be2ae325955a7ad5037f9f2ed76446) (initial commit)
 
 ### 5. 2026-11-06 — A test that encoded the wrong rule (testing)
 
@@ -60,7 +60,7 @@ that first added the files. Later entries link the exact fix commit.
 * **What was wrong:** The rule (correctly) ignores amounts under ₹10,000, so the code was right and the *test* was wrong. A test written by the same tool that wrote the code can share its misunderstanding, or invent a rule the code never had.
 * **How it was caught:** The test failed; reading `risk.py` instead of the test name showed the ₹10,000 minimum.
 * **What we did instead:** Fixed the test to ₹19,000 out of ₹20,000. We now read the rule before trusting a red test, and run the mutation harness so we know the tests fail for the right reason.
-* **Fixed in:** _initial commit — add link after pushing_
+* **Fixed in:** [642ca32](https://github.com/maddaliabhinav/LedgerLine/commit/642ca32dd7be2ae325955a7ad5037f9f2ed76446) (initial commit)
 
 ### 6. 2026-11-06 — UI bugs visible only on screen (frontend)
 
@@ -69,7 +69,16 @@ that first added the files. Later entries link the exact fix commit.
 * **What was wrong:** Name collisions and DOM API semantics. Neither shows up in an API test.
 * **How it was caught:** Screenshots of every page (Playwright) reviewed before shipping.
 * **What we did instead:** Renamed the journal rows to `.chain-entry` and routed every child replacement through a null-safe `set()` helper.
-* **Fixed in:** _initial commit — add link after pushing_
+* **Fixed in:** [642ca32](https://github.com/maddaliabhinav/LedgerLine/commit/642ca32dd7be2ae325955a7ad5037f9f2ed76446) (initial commit)
+
+### 7. 2026-11-07 — Gold on every row made gold meaningless (ui)
+
+* **Asked:** Re-theme the UI in midnight black, pure white and vibrant golden yellow; add "Create user" on the home page; remove the demo people list.
+* **It produced:** A working black-and-gold theme, but it styled every "Posted" status chip in gold. A statement became a column of gold badges, so gold no longer meant "needs attention" (held payments) or "act here" (buttons).
+* **What was wrong:** The one colour meant to draw the eye was spent on the most common, least interesting state.
+* **How it was caught:** Screenshot review of the statement page after the change.
+* **What we did instead:** "Posted" is now a quiet white outline. Gold is kept for buttons, held payments, the active tab and the proof seal; red only for refusals and errors.
+* **Fixed in:** _add link after pushing_
 
 ---
 

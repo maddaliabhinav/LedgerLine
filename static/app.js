@@ -286,52 +286,90 @@ async function logout() {
   signOut();
 }
 
-/* ------------------------------------------------------------------ login */
-const DEMO = [
-  ["priya", "LedgerPriya#2026", "Priya Sharma", "account holder"],
-  ["rahul", "LedgerRahul#2026", "Rahul Verma", "account holder"],
-  ["admin", "LedgerAdmin#2026", "Asha Iyer", "administrator"],
-  ["auditor", "LedgerAudit#2026", "Arjun Mehta", "auditor, read-only"],
-];
+/* ------------------------------------------------------------------ sign in / create user */
+function signedIn(data) {
+  state.token = data.access_token; state.user = data.user;
+  store.set("token", state.token); store.set("user", state.user);
+  location.hash = HOME[state.user.role];
+}
 
-async function pageLogin() {
+function signInForm() {
   const err = h("p", { class: "form-error", role: "alert" });
   const user = h("input", { id: "u", name: "username", autocomplete: "username", required: true });
   const pass = h("input", { id: "p", name: "password", type: "password", autocomplete: "current-password", required: true });
   const button = h("button", { class: "btn", type: "submit" }, "Sign in");
-  const form = h("form", {
+  return h("form", {
     onsubmit: async (e) => {
       e.preventDefault();
       button.disabled = true; err.textContent = "";
       const r = await api("POST", "/api/auth/login", { username: user.value, password: pass.value }, { anonymous: true });
       button.disabled = false;
       if (!r.ok) { err.textContent = errorText(r); return; }
-      state.token = r.data.access_token; state.user = r.data.user;
-      store.set("token", state.token); store.set("user", state.user);
-      location.hash = HOME[state.user.role];
+      signedIn(r.data);
     },
   },
-    h("h2", {}, "Sign in"),
+    h("h2", { class: "sr-only" }, "Sign in"),
     h("div", { class: "field" }, h("label", { for: "u" }, "Username"), user),
     h("div", { class: "field" }, h("label", { for: "p" }, "Password"), pass),
+    err, button);
+}
+
+function createUserForm() {
+  const err = h("p", { class: "form-error", role: "alert" });
+  const user = h("input", { id: "c-user", name: "username", autocomplete: "username", required: true, minlength: 3, maxlength: 32, spellcheck: "false" });
+  const name = h("input", { id: "c-name", name: "name", autocomplete: "name", required: true, maxlength: 80 });
+  const pass = h("input", { id: "c-pass", name: "password", type: "password", autocomplete: "new-password", required: true, minlength: 10 });
+  const again = h("input", { id: "c-again", name: "confirm", type: "password", autocomplete: "new-password", required: true, minlength: 10 });
+  const button = h("button", { class: "btn", type: "submit" }, "Create user");
+  return h("form", {
+    onsubmit: async (e) => {
+      e.preventDefault();
+      err.textContent = "";
+      if (pass.value !== again.value) { err.textContent = "The two passwords are different."; again.focus(); return; }
+      button.disabled = true;
+      const r = await api("POST", "/api/auth/register",
+        { username: user.value.trim().toLowerCase(), display_name: name.value.trim(), password: pass.value }, { anonymous: true });
+      button.disabled = false;
+      if (!r.ok) { err.textContent = errorText(r); return; }
+      toast(`Welcome, ${r.data.user.name}. Your account ${r.data.account.account_no} is open with ₹0.00.`);
+      signedIn(r.data);
+    },
+  },
+    h("h2", { class: "sr-only" }, "Create user"),
+    h("div", { class: "field" }, h("label", { for: "c-user" }, "Username"), user,
+      h("span", { class: "hint" }, "3 to 32 characters: lowercase letters, digits, . _ -")),
+    h("div", { class: "field" }, h("label", { for: "c-name" }, "Full name"), name),
+    h("div", { class: "field" }, h("label", { for: "c-pass" }, "Password"), pass,
+      h("span", { class: "hint" }, "At least 10 characters.")),
+    h("div", { class: "field" }, h("label", { for: "c-again" }, "Confirm password"), again),
     err, button,
-    h("div", { class: "demo" },
-      h("h3", {}, "Demo people"),
-      h("p", { class: "small muted" }, "Pick someone to fill in their username and password."),
-      h("div", { class: "demo-list" }, DEMO.map(([u, p, name, role]) =>
-        h("button", { type: "button", onclick: () => { user.value = u; pass.value = p; button.focus(); } },
-          h("span", {}, name), h("span", { class: "r" }, role))))));
+    h("p", { class: "auth-note" }, "New users are account holders. Your first account opens with ₹0.00; money arrives when an administrator records a deposit."));
+}
+
+async function pageLogin() {
+  const panel = h("div");
+  const tabs = {};
+  const show = (which) => {
+    for (const [k, b] of Object.entries(tabs)) b.setAttribute("aria-pressed", String(k === which));
+    set(panel, which === "signin" ? signInForm() : createUserForm());
+    $("input", panel)?.focus();
+  };
+  tabs.signin = h("button", { type: "button", class: "auth-tab", onclick: () => show("signin") }, "Sign in");
+  tabs.create = h("button", { type: "button", class: "auth-tab", onclick: () => show("create") }, "Create user");
 
   const sealBox = h("div", { class: "hero-seal" }, h("p", {}, "Reading the ledger…"));
-  $("#app").replaceChildren(h("div", { class: "login" },
+  set($("#app"), h("div", { class: "login" },
     h("section", { class: "login-hero" },
       h("a", { class: "wordmark", href: "#/" }, "Ledger", h("span", {}, "Line")),
       h("div", {},
         h("h1", {}, "Move money. Prove every move."),
         h("p", { class: "lede" }, "Balances the database itself enforces, requests that pay exactly once however often they arrive, and a signed journal anyone can check.")),
       sealBox),
-    h("section", { class: "login-form" }, form)));
-  user.focus();
+    h("section", { class: "login-form" },
+      h("div", { class: "auth" },
+        h("div", { class: "auth-tabs", role: "group", "aria-label": "Sign in or create a user" }, tabs.signin, tabs.create),
+        panel))));
+  show("signin");
   const r = await api("GET", "/api/health", undefined, { anonymous: true });
   if (r.ok) {
     const head = r.data.ledger_head;
@@ -656,7 +694,8 @@ async function pageOverview(main) {
           total(String(p.counts.replays.replayed || 0), "duplicate requests answered from storage")),
         h("div", { class: "row actions" },
           h("a", { class: "btn", href: "#/reviews" }, pending ? `Review ${pending} held payment${pending > 1 ? "s" : ""}` : "No payments waiting"),
-          h("a", { class: "btn secondary", href: "#/proof" }, "See every check")))));
+          h("a", { class: "btn secondary", href: "#/proof" }, "See every check"),
+          state.user.role === "admin" ? h("a", { class: "btn secondary", href: "#/users" }, "Create user") : null))));
 }
 function total(v, k) { return h("div", { class: "total" }, h("div", { class: "v wide-num" }, v), h("div", { class: "k" }, k)); }
 
@@ -801,13 +840,13 @@ async function pageUsers(main) {
       const res = await api("POST", "/api/users", { username: u.value, display_name: n.value, role: role.value, password: pw.value });
       toast(res.ok ? `Created ${res.data.username}.` : errorText(res), !res.ok);
       if (res.ok) route();
-    } }, h("h2", {}, "Add a person"),
+    } }, h("h2", {}, "Create a user"),
       h("div", { class: "grid-2" },
         h("div", { class: "field" }, h("label", { for: "n-user" }, "Username"), u),
         h("div", { class: "field" }, h("label", { for: "n-name" }, "Name"), n),
         h("div", { class: "field" }, h("label", { for: "n-role" }, "Role"), role),
         h("div", { class: "field" }, h("label", { for: "n-pw" }, "Password"), pw)),
-      h("button", { class: "btn", type: "submit" }, "Add person")), h("div", { class: "page-head" }));
+      h("button", { class: "btn", type: "submit" }, "Create user")), h("div", { class: "page-head" }));
   }
   const body = h("tbody");
   for (const p of r.data.users) {

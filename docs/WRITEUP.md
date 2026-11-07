@@ -2,13 +2,13 @@
 
 ## What we built
 
-A money-movement system for a company's internal accounts. Holders withdraw and transfer, administrators record deposits and decide flagged payments, and auditors read and verify everything. Three things are guaranteed:
+A money-movement system for a company's internal accounts. Anyone can sign up as an account holder (with an empty account). Holders withdraw and transfer, administrators record deposits and decide flagged payments, and auditors read and verify everything. Three things are guaranteed:
 
 1. **The books always balance.** Every movement is double entry: one journal entry whose postings sum to zero. The sum of every balance in the system, including the "outside world" account, is always exactly 0. No customer balance goes below its floor (₹0, or an authorised overdraft of up to ₹50,000).
 2. **Exactly once.** Every money-moving request carries an Idempotency-Key. The same request arriving twice, or twenty times at once, moves money once and gets the same bytes back. Every duplicate is logged.
 3. **Provable history.** The journal records every posting, every refused attempt, every AI suggestion and every human decision. It is append-only (the database refuses edits), hash-chained (each entry commits to all before it) and Ed25519-signed with a key that is not in the database. Anyone can verify an exported ledger offline with only the public key.
 
-Alongside the system: a web UI for all three roles, including a **Race Lab** that fires real concurrent requests from the browser; **Sentinel**, an AI review layer that flags and explains but never decides; a red-team script (`tools/attack.py`); and a **mutation harness** (`tools/mutation_check.py`) that removes each of 35 locks and checks in turn and proves the test suite fails every time.
+Alongside the system: a web UI for all three roles, including a **Race Lab** that fires real concurrent requests from the browser; **Sentinel**, an AI review layer that flags and explains but never decides; a red-team script (`tools/attack.py`); and a **mutation harness** (`tools/mutation_check.py`) that removes each of 37 locks and checks in turn and proves the test suite fails every time.
 
 ## The integrity and concurrency model, in our own words
 

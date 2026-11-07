@@ -64,6 +64,14 @@ class LoginIn(Strict):
     password: str = Field(min_length=1, max_length=256)
 
 
+class SignUpIn(Strict):
+    """Public sign-up. There is deliberately no role field: extra="forbid"
+    turns {"role": "admin"} into a 422 instead of silently ignoring it."""
+    username: str = Field(min_length=3, max_length=32)
+    display_name: str = Field(min_length=1, max_length=80)
+    password: str = Field(min_length=10, max_length=256)
+
+
 class DepositIn(Strict):
     account: AccountNo
     amount: Amount

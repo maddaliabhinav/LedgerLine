@@ -5,9 +5,11 @@ from fastapi import APIRouter, Depends, Request
 from .. import db
 from ..config import get_settings
 from ..errors import Unauthorized
-from ..security import create_access_token, dummy_hash, login_throttle, verify_password
+from ..ledger import admin_ops
+from ..money import money_view
+from ..security import create_access_token, dummy_hash, login_throttle, signup_throttle, verify_password
 from .deps import CurrentUser, current_user
-from .schemas import LoginIn
+from .schemas import LoginIn, SignUpIn
 
 router = APIRouter(prefix="/api", tags=["auth"])
 
@@ -53,6 +55,20 @@ def login(body: LoginIn, request: Request):
     return {"access_token": token, "token_type": "bearer", "expires_in": expires_in,
             "user": {"username": user["username"], "name": user["display_name"], "role": user["role"],
                      "permissions": PERMISSIONS[user["role"]]}}
+
+
+@router.post("/auth/register", status_code=201)
+def register(body: SignUpIn, request: Request):
+    """Public self-service sign-up: always an account holder with one Rs 0 account.
+    Admins and auditors are created only by an admin (POST /api/users)."""
+    signup_throttle.attempt(_client_ip(request))
+    user, acct = admin_ops.register_holder(body.username, body.display_name, body.password)
+    token, expires_in = create_access_token(user)
+    return {"access_token": token, "token_type": "bearer", "expires_in": expires_in,
+            "user": {"username": user["username"], "name": user["display_name"], "role": user["role"],
+                     "permissions": PERMISSIONS[user["role"]]},
+            "account": {"account_no": acct["account_no"], "name": acct["name"],
+                        "balance": money_view(acct["balance"])}}
 
 
 @router.post("/auth/logout")

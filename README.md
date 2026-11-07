@@ -11,7 +11,7 @@ LedgerLine moves money between accounts so that:
 What sets it apart:
 
 * **The database is the backstop.** CHECK constraints and triggers mean even a buggy app cannot overdraw, create money or edit history.
-* **Mutation-tested tests.** `tools/mutation_check.py` removes each of 35 locks and checks; the test suite fails every time ([report](docs/MUTATION_REPORT.md)).
+* **Mutation-tested tests.** `tools/mutation_check.py` removes each of 37 locks and checks; the test suite fails every time ([report](docs/MUTATION_REPORT.md)).
 * **Red-team script.** `tools/attack.py` runs the judges' attacks against any URL and prints a scorecard.
 * **AI that flags, people who decide.** Sentinel holds risky payments in suspense with explained reasons. An optional LLM writes reviewer notes that never see user text and whose every number is checked. A test proves the AI cannot reach money-moving code.
 * **Race Lab** in the UI fires real concurrent requests from your browser.
@@ -25,6 +25,8 @@ What sets it apart:
 | Account holder | `acme` | `LedgerAcme#2026` | LL-1004 (a vendor) |
 | Administrator | `admin` | `LedgerAdmin#2026` | deposits, open/freeze accounts, overdrafts, users, approve/reject held payments, reversals |
 | Auditor (read-only) | `auditor` | `LedgerAudit#2026` | everything read-only: proof, journal, flags, duplicates, evidence export |
+
+Anyone can also **create a user** from the home page. Self-service users are always account holders with one account at ₹0.00; administrators and auditors can only be created by an administrator.
 
 ## Roles and what each may do
 
@@ -61,7 +63,7 @@ uvicorn app.main:app --reload
 ## Prove it
 
 ```bash
-python -m pytest                          # 115 tests against real PostgreSQL, ~20 s
+python -m pytest                          # 119 tests against real PostgreSQL, ~20 s
 python tools/mutation_check.py            # remove each lock/check, prove a test fails (~10 min)
 python tools/attack.py --url http://localhost:8000
 python -m app.cli verify                  # replay the whole journal: 13 checks
@@ -86,7 +88,7 @@ One money request is **one transaction**: claim the key, lock the customer rows 
 
 ## Documents
 
-* [THREATS.md](THREATS.md): 71 threats, each with its defence, test, mutation and status, plus the risks we accepted and why.
+* [THREATS.md](THREATS.md): 75 threats, each with its defence, test, mutation and status, plus the risks we accepted and why.
 * [PROMPTS.md](PROMPTS.md): how AI was used and where it was wrong.
 * [docs/WRITEUP.md](docs/WRITEUP.md): what we built, what we did not, our integrity and concurrency model, what is unfinished.
 * [docs/API.md](docs/API.md): every endpoint, who may call it, what it does to the money.
@@ -112,4 +114,3 @@ static/                   web UI
 tests/                    races, retries, crashes, theft, tampering, AI guardrails
 tools/                    attack.py, mutation_check.py, verify_bundle.py
 ```
-

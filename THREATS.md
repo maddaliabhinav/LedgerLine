@@ -134,6 +134,15 @@ if the defence were removed. Status is one of:
 | T70 | Flood of refused attempts fills the journal / queues on the chain head. | Authenticated users only, and each attempt is small. No per-user rate limit on money endpoints. | — | Accepted (A5) |
 | T71 | The single chain head caps throughput. | A deliberate choice of correctness over speed. | — | Accepted (A8) |
 
+## H. Public sign-up ("Create user" on the home page)
+
+| ID | Attack | Defence | Proof | Status |
+|---|---|---|---|---|
+| T72 | **Sign up as an administrator or auditor** from the public page. | The role is not a parameter: `register_holder()` hard-codes `'holder'` in its INSERT, and the request model forbids unknown fields, so `{"role": "admin"}` is a 422. Admins and auditors are created only by an admin. | `test_sign_up_cannot_choose_a_role_or_a_balance`, `test_sign_up_gives_an_account_holder_with_one_empty_account`, attack.py. M36. | Closed |
+| T73 | Sign up for **free money** (an opening balance). | The new account opens at ₹0 (DB `LL001`); money arrives only through an admin-recorded deposit, which a new holder cannot make. | `test_sign_up_gives_an_account_holder_with_one_empty_account` | Closed |
+| T74 | **Sign-up flood**: thousands of users and accounts to bloat the journal or squat names. | At most 10 sign-up attempts per address per 10 minutes; every attempt counts, successful or not. | `test_sign_up_is_rate_limited_per_address`. M37. | Mitigated (A11) |
+| T75 | **Username probing** through "username is taken". | Usernames are not secrets (they show on statements as "initiated by"). Probing is rate-limited, passwords are scrypt-hashed and login is throttled. | — | Accepted |
+
 ---
 
 ## Accepted risks: what is still open, and why
@@ -147,6 +156,7 @@ if the defence were removed. Status is one of:
 * **A7. Held payments never expire.** Money can sit in suspense until someone decides. The proof shows exactly how much, and for how long.
 * **A8. Throughput.** Every append queues on one chain-head row, so expect hundreds (not tens of thousands) of entries per second. Sharding the chain per account would lift this at the cost of a single global order.
 * **A9. Key rotation.** Entries record `key_id`, but there is no rotation procedure. Changing `LEDGER_SIGNING_KEY` today makes old entries fail verification.
+* **A11. Sign-up limiting is in memory, per process and per address.** Many addresses (or more workers) get more sign-ups. A CAPTCHA or email verification would be the next step; we left it out of a demo system on purpose.
 * **A10. Sentinel is heuristic.** Rules with robust statistics, not a trained model. It will miss patterns it does not encode and will sometimes hold honest payments; a person always decides.
 
 ## Things we found that are easy to miss

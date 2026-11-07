@@ -29,6 +29,7 @@ Base URL: your deployment (for example `https://ledgerline.onrender.com`). Inter
 | `POST /api/audit/reconciliation` | ✓ | – | ✓ | none (the summary is journaled) |
 | `GET /api/entries/{seq}` | ✓ | entries touching own accounts | ✓ | read + hash/signature check |
 | `GET /api/public-key`, `GET /api/health` | public | public | public | read |
+| `POST /api/auth/register` (sign-up) | public | public | public | none: creates an account holder with one ₹0 account |
 
 ---
 
@@ -38,6 +39,11 @@ Base URL: your deployment (for example `https://ledgerline.onrender.com`). Inter
 Anyone. Body `{"username": "priya", "password": "…"}`.
 `200` → `{"access_token", "token_type": "bearer", "expires_in": 3600, "user": {"username", "name", "role", "permissions": [...]}}`.
 `401 BAD_CREDENTIALS`. `429 TOO_MANY_REQUESTS` after 10 failures in 5 minutes from one IP.
+
+### `POST /api/auth/register`
+Anyone (public sign-up, the "Create user" tab on the home page). Body `{"username": "meera", "display_name": "Meera Nair", "password": "at-least-10-chars"}`.
+Always creates an **account holder** with one account named "Main account" at **₹0.00**, and signs them in. There is no role field: `{"role": "admin"}` (or any unknown field such as `balance`) returns `422`. Admins and auditors are created only by an admin (`POST /api/users`). The new user and account are journaled (`USER_CREATED`, `ACCOUNT_OPENED`, marked `"via": "self-service sign-up"`).
+`201` → the same shape as login, plus `"account": {"account_no", "name", "balance"}`. `409` username taken · `422` invalid input · `429 TOO_MANY_REQUESTS` after 10 sign-up attempts in 10 minutes from one address.
 
 ### `POST /api/auth/logout`
 Any signed-in user. Revokes **all** of that user's tokens. `200 {"ok": true}`.
@@ -133,7 +139,7 @@ A **new** entry moves the money back the way it came: transfer → payee to paye
 | 409 | `IDEMPOTENCY_KEY_REUSED`, `REQUEST_IN_PROGRESS` | key misuse / first request still running; nothing moved | in the duplicates log |
 | 422 | `VALIDATION_FAILED`, `SAME_ACCOUNT`, `DESTINATION_NOT_ALLOWED`, `NOT_REVERSIBLE` | malformed or impossible | the last three ✓ |
 | 428 | `IDEMPOTENCY_KEY_REQUIRED` | send an Idempotency-Key | – |
-| 429 | `TOO_MANY_REQUESTS` | login throttled | – |
+| 429 | `TOO_MANY_REQUESTS` | login or sign-up throttled | – |
 | 503 | `BUSY` | lock or statement timeout; nothing moved, retry with the same key | – |
 
 ## curl examples

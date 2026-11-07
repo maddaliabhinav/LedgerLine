@@ -159,7 +159,20 @@ def main() -> int:
     record("20 opposite transfers A<->B at once (deadlock bait)", all(r.status_code < 500 for r in rs),
            f"statuses {sorted({r.status_code for r in rs})}")
 
-    # 11. Pay a system account directly.
+    # 11. Public sign-up: become an admin, or get free money.
+    name = f"intruder{uuid.uuid4().hex[:8]}"
+    r1 = httpx.post(f"{args.url}/api/auth/register", timeout=60,
+                    json={"username": name, "display_name": "Intruder", "password": "intruder-pass-123", "role": "admin"})
+    r2 = httpx.post(f"{args.url}/api/auth/register", timeout=60,
+                    json={"username": name, "display_name": "Intruder", "password": "intruder-pass-123"})
+    ok = r1.status_code == 422 and r2.status_code == 201 and r2.json()["user"]["role"] == "holder" \
+        and r2.json()["account"]["balance"]["paise"] == 0
+    record("sign up as admin / sign up for free money", ok,
+           f"role=admin -> {r1.status_code}; plain sign-up -> {r2.status_code} "
+           f"{r2.json()['user']['role'] if r2.status_code == 201 else ''} with Rs "
+           f"{r2.json()['account']['balance']['rupees'] if r2.status_code == 201 else '?'}")
+
+    # 12. Pay a system account directly.
     r = holder.post("/api/transfers", {"from_account": b, "to_account": "SYS-SUSPENSE", "amount": "1"})
     record("send money straight into a system account", r.status_code == 422, f"{r.status_code}")
 

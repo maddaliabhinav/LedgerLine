@@ -56,6 +56,10 @@ async def security_headers(request: Request, call_next):
     path = request.url.path
     if path.startswith("/api"):
         response.headers["Cache-Control"] = "no-store"
+    elif path == "/" or path.startswith("/static/"):
+        # Revalidate the UI on every load (a cheap 304 when unchanged), so a new
+        # deploy or an edit shows on a normal refresh, never a stale cached copy.
+        response.headers["Cache-Control"] = "no-cache"
     if not path.startswith(("/docs", "/redoc", "/openapi.json")):
         response.headers["Content-Security-Policy"] = CSP
     return response
