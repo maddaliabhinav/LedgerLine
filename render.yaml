@@ -1,0 +1,37 @@
+# Render Blueprint: one web service + one PostgreSQL database.
+# Render dashboard -> New -> Blueprint -> pick this repo. See docs/DEPLOY.md.
+databases:
+  - name: ledgerline-db
+    plan: free
+    databaseName: ledgerline
+    user: ledgerline
+    postgresMajorVersion: "16"
+
+services:
+  - type: web
+    name: ledgerline
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    # migrate is idempotent; seed only runs on an empty database.
+    startCommand: >-
+      python -m app.cli migrate &&
+      python -m app.cli seed --if-empty &&
+      uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 2
+      --proxy-headers --forwarded-allow-ips "*"
+    healthCheckPath: /api/health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ledgerline-db
+          property: connectionString
+      - key: APP_ENV
+        value: production
+      - key: SECRET_KEY            # signs login tokens
+        generateValue: true
+      - key: LEDGER_SIGNING_KEY    # signs journal entries - never change it after the first deploy
+        generateValue: true
+      - key: ANTHROPIC_API_KEY     # optional: AI review notes; leave empty to use the built-in template
+        sync: false
+      - key: AI_MODEL
+        value: claude-haiku-5-5

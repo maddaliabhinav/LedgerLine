@@ -1,0 +1,9 @@
+# Exact versions the test suite was run against.
+fastapi==0.162.0
+uvicorn==0.54.0
+psycopg[binary]==3.3.8
+psycopg-pool==3.3.3
+pydantic==2.13.5
+PyJWT==2.15.0
+cryptography==50.0.1
+httpx==0.28.1
