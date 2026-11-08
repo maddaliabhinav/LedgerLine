@@ -1,4 +1,4 @@
-"""FastAPI application: routers, error format, security headers, static UI."""
+"""->FastAPI application: routers, error format, security headers, static UI."""
 
 from __future__ import annotations
 
