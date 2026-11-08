@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import unicodedata
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 
@@ -62,6 +62,17 @@ class Strict(BaseModel):
 class LoginIn(Strict):
     username: str = Field(min_length=1, max_length=64)
     password: str = Field(min_length=1, max_length=256)
+
+
+class SignUpIn(Strict):
+    """Public sign-up. role is "holder" (the default) or "auditor", which only
+    files a request for an administrator to decide. {"role": "admin"} is a 422,
+    and extra="forbid" rejects anything else ("balance", "is_active", ...)
+    instead of silently ignoring it."""
+    username: str = Field(min_length=3, max_length=32)
+    display_name: str = Field(min_length=1, max_length=80)
+    password: str = Field(min_length=10, max_length=256)
+    role: Literal["holder", "auditor"] = "holder"
 
 
 class DepositIn(Strict):

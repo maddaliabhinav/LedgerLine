@@ -1,70 +1,27 @@
-/* LedgerLine UI - security-paper palette, banknote-wide numerals, one bold element: the proof seal. */
+/* LedgerLine UI - midnight black, pure white, vibrant golden yellow.
+   One bold element: the gold proof seal. Red appears only on refusals and errors. */
 
 :root {
-  --paper: #eef3ef;
-  --surface: #fbfdfb;
-  --surface-2: #e2ebe6;
-  --ink: #10302b;
-  --ink-2: #4a655f;
-  --ink-3: #6f8781;
-  --line: #c8d7d1;
-  --note: #1d6b5f;
-  --note-strong: #155248;
-  --on-note: #ffffff;
-  --stamp: #b4235a;
-  --stamp-bg: #fbe9f0;
-  --amber: #8f5a0c;
-  --amber-bg: #fbf0dc;
-  --focus: #0b63ce;
-  --guilloche: rgba(29, 107, 95, 0.085);
-  --shadow: 0 1px 0 rgba(16, 48, 43, 0.05), 0 14px 32px -24px rgba(16, 48, 43, 0.45);
+  --paper: #0b0b0f;                       /* midnight black: the page */
+  --surface: #14141b;                     /* panels and cards */
+  --surface-2: #1d1d26;                   /* table heads, insets, tabs */
+  --ink: #ffffff;                         /* pure white: text */
+  --ink-2: rgba(255, 255, 255, 0.72);
+  --ink-3: rgba(255, 255, 255, 0.5);
+  --line: rgba(255, 255, 255, 0.13);
+  --note: #ffc300;                        /* vibrant golden yellow: actions, proof, highlights */
+  --note-strong: #ffd447;
+  --on-note: #0b0b0f;                     /* black text on gold */
+  --stamp: #ff5a5f;                       /* refusals and errors only */
+  --stamp-bg: rgba(255, 90, 95, 0.12);
+  --amber: #ffc300;
+  --amber-bg: rgba(255, 195, 0, 0.14);
+  --focus: #ffc300;
+  --guilloche: rgba(255, 195, 0, 0.055);
+  --shadow: 0 1px 0 rgba(0, 0, 0, 0.5), 0 18px 40px -26px rgba(0, 0, 0, 0.95);
   --radius: 10px;
   --font: "Archivo", system-ui, -apple-system, "Segoe UI", sans-serif;
   --mono: "Martian Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
-  color-scheme: light;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --paper: #0c1a17;
-    --surface: #11231f;
-    --surface-2: #183029;
-    --ink: #dbeae4;
-    --ink-2: #a7bfb8;
-    --ink-3: #7d958f;
-    --line: #26413a;
-    --note: #5fc2ae;
-    --note-strong: #84d6c4;
-    --on-note: #06201b;
-    --stamp: #ff6f9e;
-    --stamp-bg: #3a1424;
-    --amber: #f0b04d;
-    --amber-bg: #33240b;
-    --focus: #7cb7ff;
-    --guilloche: rgba(95, 194, 174, 0.08);
-    --shadow: 0 1px 0 rgba(0, 0, 0, 0.3), 0 16px 32px -24px rgba(0, 0, 0, 0.8);
-    color-scheme: dark;
-  }
-}
-
-:root[data-theme="dark"] {
-  --paper: #0c1a17;
-  --surface: #11231f;
-  --surface-2: #183029;
-  --ink: #dbeae4;
-  --ink-2: #a7bfb8;
-  --ink-3: #7d958f;
-  --line: #26413a;
-  --note: #5fc2ae;
-  --note-strong: #84d6c4;
-  --on-note: #06201b;
-  --stamp: #ff6f9e;
-  --stamp-bg: #3a1424;
-  --amber: #f0b04d;
-  --amber-bg: #33240b;
-  --focus: #7cb7ff;
-  --guilloche: rgba(95, 194, 174, 0.08);
-  --shadow: 0 1px 0 rgba(0, 0, 0, 0.3), 0 16px 32px -24px rgba(0, 0, 0, 0.8);
   color-scheme: dark;
 }
 
@@ -189,19 +146,33 @@ input.amount { font-variation-settings: "wdth" 115; font-size: 20px; font-weight
 .hero-seal svg { width: 176px; height: 176px; flex: none; }
 .hero-seal p { font-size: 13.5px; color: var(--ink-2); max-width: 34ch; }
 .login-form { display: flex; align-items: center; justify-content: center; padding: 40px 24px; }
-.login-form form { width: min(380px, 100%); }
+.login-form form { width: 100%; }
 .login-form h2 { font-size: 24px; margin-bottom: 20px; }
-.demo { margin-top: 26px; border-top: 1px solid var(--line); padding-top: 18px; }
-.demo h3 { margin-bottom: 4px; }
-.demo-list { display: grid; gap: 8px; margin-top: 12px; }
-.demo-list button {
-  display: flex; justify-content: space-between; align-items: center; gap: 10px; text-align: left;
-  font: inherit; background: var(--surface); color: var(--ink); border: 1px solid var(--line);
-  border-radius: 8px; padding: 9px 12px; cursor: pointer;
-}
-.demo-list button:hover { border-color: var(--note); }
-.demo-list .r { font-size: 12.5px; color: var(--ink-2); }
+.auth { width: min(400px, 100%); }
+.auth-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px; background: var(--surface-2);
+  border: 1px solid var(--line); border-radius: 10px; margin-bottom: 24px; }
+.auth-tab { font: inherit; font-weight: 600; border: 0; border-radius: 7px; padding: 9px 12px; cursor: pointer;
+  background: transparent; color: var(--ink-2); }
+.auth-tab:hover { color: var(--ink); }
+.auth-tab[aria-pressed="true"] { background: var(--note); color: var(--on-note); }
+.auth-note { font-size: 13px; color: var(--ink-2); margin-top: 18px; }
 .form-error { color: var(--stamp); font-size: 13.5px; min-height: 20px; margin: 6px 0 10px; }
+.form-error.waiting { color: var(--note); }                 /* "waiting for approval" is not an error */
+.auth-notice { border: 1px solid var(--note); background: var(--amber-bg); border-radius: var(--radius);
+  padding: 10px 12px; font-size: 13.5px; margin-bottom: 16px; }
+
+/* account type: two choice cards */
+.choices { border: 0; padding: 0; margin: 0 0 16px; min-width: 0; display: grid; gap: 8px; }
+.choices legend { font-weight: 560; font-size: 13.5px; padding: 0; margin-bottom: 6px; }
+.choice { display: grid; grid-template-columns: auto 1fr; column-gap: 10px; row-gap: 2px; align-items: start;
+  padding: 11px 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); cursor: pointer; }
+.choice:hover { border-color: color-mix(in srgb, var(--note) 50%, var(--line)); }
+.choice.selected { border-color: var(--note); box-shadow: inset 0 0 0 1px var(--note); }
+.choice input { grid-row: span 2; width: 16px; height: 16px; margin: 3px 0 0; padding: 0; accent-color: var(--note); }
+.choice input:focus { box-shadow: none; }
+.choice:has(input:focus-visible) { outline: 2.5px solid var(--focus); outline-offset: 2px; }
+.choice-title { font-weight: 600; }
+.choice-text { grid-column: 2; font-size: 12.5px; color: var(--ink-2); }
 
 /* ---------- account cards (banknote band on the left) ---------- */
 .accounts { display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
@@ -228,8 +199,8 @@ input.amount { font-variation-settings: "wdth" 115; font-size: 20px; font-weight
   white-space: nowrap;
 }
 .mark { display: inline-block; border-radius: 999px; padding: 1px 8px; font-size: 12px; font-weight: 600; white-space: nowrap; }
-.mark.held { background: var(--amber-bg); color: var(--amber); }
-.mark.ok { background: color-mix(in srgb, var(--note) 14%, transparent); color: var(--note); }
+.mark.held { background: var(--note); color: var(--on-note); }
+.mark.ok { background: transparent; color: var(--ink-2); box-shadow: inset 0 0 0 1px var(--line); }
 .mark.bad { background: var(--stamp-bg); color: var(--stamp); }
 .mark.info { background: var(--surface-2); color: var(--ink-2); }
 
@@ -254,6 +225,18 @@ tr.refused td.money:not(.balance) { text-decoration: line-through; text-decorati
 .filters { margin-bottom: 18px; }
 .filters select, .filters input { width: auto; min-width: 170px; flex: 0 1 auto; }
 .btn.secondary[aria-current="page"] { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.btn .count { min-width: 20px; padding: 0 6px; border-radius: 999px; background: var(--note); color: var(--on-note);
+  font-size: 12px; font-weight: 700; line-height: 20px; text-align: center; }
+
+/* ---------- auditor requests ---------- */
+.requests { display: grid; margin-top: 8px; }
+.request { display: grid; gap: 10px; padding: 14px 0; border-top: 1px solid var(--line); }
+.request:first-child { border-top: 0; padding-top: 4px; }
+.request-actions input { flex: 1 1 220px; width: auto; }
+.empty-line { color: var(--ink-2); font-size: 14px; margin: 10px 0 0; }
+.history { margin-top: 16px; }
+.history summary { cursor: pointer; color: var(--ink-2); font-size: 13.5px; font-weight: 560; }
+.history .table-wrap { margin-top: 10px; }
 
 /* ---------- review cards ---------- */
 .review { display: grid; grid-template-columns: 92px 1fr; gap: 18px; }
@@ -300,7 +283,7 @@ tr.refused td.money:not(.balance) { text-decoration: line-through; text-decorati
 .verdict.bad { color: var(--stamp); }
 
 /* ---------- drawer ---------- */
-.scrim { position: fixed; inset: 0; background: rgba(6, 20, 17, 0.45); z-index: 40; }
+.scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.62); z-index: 40; }
 .drawer {
   position: fixed; top: 0; right: 0; bottom: 0; width: min(560px, 100%); z-index: 41; overflow-y: auto;
   background: var(--surface); border-left: 1px solid var(--line); padding: 22px 22px 40px; box-shadow: var(--shadow);
@@ -317,8 +300,8 @@ pre.json { font-family: var(--mono); font-size: 11.5px; background: var(--paper)
 
 /* ---------- score dial ---------- */
 .dial-track { fill: none; stroke: var(--line); stroke-width: 8; }
-.dial-bar { fill: none; stroke: var(--note); stroke-width: 8; stroke-linecap: round; }
-.dial-bar.held { stroke: var(--amber); }
+.dial-bar { fill: none; stroke: var(--ink); stroke-width: 8; stroke-linecap: round; }
+.dial-bar.held { stroke: var(--note); }
 .dial-num { fill: var(--ink); font-family: var(--font); font-size: 22px; font-weight: 700; text-anchor: middle; font-variation-settings: "wdth" 112; }
 
 /* ---------- seal ---------- */

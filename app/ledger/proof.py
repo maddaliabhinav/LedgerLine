@@ -17,6 +17,10 @@ snapshot and checks, independently of the cached balances:
   decisions    no held payment decided twice; no entry reversed twice
   exactly-once no idempotency key appears on two journal entries
   refusals     each refused attempt's recorded balance equals the replayed balance
+  access       every user has exactly one USER_CREATED entry, with the role it has now;
+               auditors and admins were created by another administrator (or the
+               server's command line); no access request decided twice, and every
+               approval created its auditor
   backstop     how many times the database had to refuse a write (should be 0)
 """
 
@@ -86,6 +90,7 @@ def run_proof(cur: Cursor) -> dict:
         ("decisions", "No held payment decided twice, no entry reversed twice"),
         ("exactly_once", "No idempotency key moved money twice"),
         ("refusals", "Refused attempts recorded the true balance at that moment"),
+        ("access", "Every user is on the record with their role; staff access only from an administrator"),
         ("backstop", "Database backstop never had to fire"),
     ]}
 
@@ -106,6 +111,8 @@ def run_proof(cur: Cursor) -> dict:
     external_in = external_out = 0
     last_row = None
     entries = 0
+    user_created: dict[int, list[dict]] = defaultdict(list)
+    access_decisions: dict = {}
 
     for row, postings in iter_entries(cur):
         entries += 1
@@ -186,6 +193,15 @@ def run_proof(cur: Cursor) -> dict:
         if row["idempotency_key"]:
             keys[(row["actor_id"], row["idempotency_key"])] += 1
 
+        # --- who may sign in ---
+        if row["kind"] == "USER_CREATED":
+            user_created[int(row["details"].get("user_id") or 0)].append(row)
+        elif row["kind"] == "ACCESS_DECISION":
+            request_id = row["details"].get("request_id")
+            if request_id in access_decisions:
+                checks["access"].fail(f"access request {request_id} decided twice (again by #{seq})")
+            access_decisions[request_id] = row
+
     # --- head ---
     cur.execute("SELECT last_seq, last_hash FROM ledger_head WHERE id = 1")
     head = cur.fetchone()
@@ -228,6 +244,7 @@ def run_proof(cur: Cursor) -> dict:
         f"{sum(1 for _ in keys)} keyed requests; duplicates answered from storage: {replays.get('replayed', 0)}; "
         f"key reuse refused: {replays.get('key_reused_with_different_request', 0)}; "
         f"in-flight retries: {replays.get('in_flight_timeout', 0)}")
+    _check_access(cur, checks["access"], user_created, access_decisions)
     checks["chain"].summary = f"{entries} entries, #1 .. #{last_row['seq'] if last_row else 0}"
     checks["signatures"].summary = f"key {signer.key_id}"
     checks["backstop"].summary = "the application's own checks stopped every bad request"
@@ -251,6 +268,38 @@ def run_proof(cur: Cursor) -> dict:
         "counts": {"by_kind": dict(kinds), "by_status": dict(statuses), "replays": replays},
         "checks": views,
     }
+
+
+def _check_access(cur: Cursor, check: _Check, user_created: dict[int, list[dict]], decisions: dict) -> None:
+    """The users table must agree with the signed record of how each user came to be."""
+    cur.execute("SELECT id, username, role FROM users")
+    users = {row["id"]: row for row in cur.fetchall()}
+    for user_id, user in users.items():
+        made = user_created.get(user_id, [])
+        if len(made) != 1:
+            check.fail(f"user {user['username']} has {len(made)} USER_CREATED entries, expected exactly 1")
+            continue
+        entry = made[0]
+        if entry["details"].get("role") != user["role"]:
+            check.fail(f"user {user['username']} is {user['role']} but was created as "
+                       f"{entry['details'].get('role')} (#{entry['seq']})")
+        if user["role"] != "holder" and entry["actor_id"] is not None:
+            creator = users.get(entry["actor_id"])
+            if creator is None or creator["role"] != "admin" or creator["id"] == user_id:
+                check.fail(f"{user['role']} {user['username']} was not created by an administrator (#{entry['seq']})")
+    for user_id, made in user_created.items():
+        if user_id not in users:
+            check.fail(f"#{made[0]['seq']} records user {user_id}, who does not exist")
+    created_from = {e["ref_seq"]: e for made in user_created.values() for e in made if e["ref_seq"]}
+    approved = [d for d in decisions.values() if d["details"].get("decision") == "approved"]
+    for decision in approved:
+        made = created_from.get(decision["seq"])
+        if made is None or made["details"].get("role") != decision["details"].get("role") \
+                or made["details"].get("username") != decision["details"].get("username"):
+            check.fail(f"approval #{decision['seq']} did not create the auditor it approved")
+    staff = sum(1 for user in users.values() if user["role"] != "holder")
+    check.summary = (f"{len(users)} users, {staff} with staff access; auditor requests approved: {len(approved)}, "
+                     f"declined: {len(decisions) - len(approved)}")
 
 
 def verify_single(cur: Cursor, seq: int) -> dict | None:

@@ -42,6 +42,8 @@ class Mutation:
 
 ENGINE = "app/ledger/engine.py"
 SCHEMA = "app/schema.sql"
+ADMIN_OPS = "app/ledger/admin_ops.py"
+ACCESS_SQL = "app/migrations/002_access_requests.sql"
 BALANCE_CHECK = 'if amount > accounts.available(source):                    # THE balance check'
 OWNER_CHECK = 'if source["owner_id"] != actor.id:'
 DAILY_CHECK = 'if _daily_outgoing(cur, source["id"]) + amount > source["daily_limit"]:'
@@ -132,6 +134,34 @@ MUTATIONS = [
              "bad = grounding_check(text, facts)", "bad = []"),
     Mutation("M35", "Send the user's memo to the LLM", "app/sentinel/narrator.py",
              '"amount": hold["amount"],', '"amount": hold["amount"], "memo": hold["memo"],'),
+    # --- public sign-up --------------------------------------------------------------
+    Mutation("M36", "Public sign-up creates administrators", "app/ledger/admin_ops.py",
+             "VALUES (%s, %s, 'holder', %s)", "VALUES (%s, %s, 'admin', %s)"),
+    Mutation("M37", "Remove the sign-up rate limit", "app/api/routes_auth.py",
+             "signup_throttle.attempt(_client_ip(request))", "pass"),
+    # --- auditor access: requested at sign-up, granted only by an administrator ---------
+    Mutation("M38", "Let any signed-in user decide auditor requests", "app/api/routes_admin.py",
+             'deciders = require_roles("admin")', 'deciders = require_roles("admin", "auditor", "holder")'),
+    Mutation("M39", "Decide an auditor request twice (skip the status check)", ADMIN_OPS,
+             'if req["status"] != "pending":', "if False:"),
+    Mutation("M40", "Decide auditor requests without locking the request row", ADMIN_OPS,
+             'FROM access_requests WHERE id = %s FOR UPDATE"', 'FROM access_requests WHERE id = %s"'),
+    Mutation("M41", "A waiting request no longer reserves its username", ADMIN_OPS,
+             'if waiting is not None and waiting["id"] != request_id:', "if False:"),
+    Mutation("M42", "Database accepts requests for admin access", ACCESS_SQL,
+             "role          TEXT NOT NULL CHECK (role = 'auditor'),", "role          TEXT NOT NULL,"),
+    Mutation("M43", "Database lets a non-admin's entry decide a request (LL012)", ACCESS_SQL,
+             "AND decider.role = 'admin') THEN", ") THEN"),
+    Mutation("M44", "Database lets a decided request be decided again (LL012)", ACCESS_SQL,
+             "IF OLD.status <> 'pending' THEN", "IF FALSE THEN"),
+    Mutation("M45", "Make user roles editable (LL013)", ACCESS_SQL,
+             "IF NEW.role <> OLD.role THEN", "IF FALSE THEN"),
+    Mutation("M46", "Drop the users-on-the-record check at commit (LL014)", ACCESS_SQL,
+             "CREATE CONSTRAINT TRIGGER users_created_on_record AFTER INSERT ON users\n"
+             "    DEFERRABLE INITIALLY DEFERRED\n"
+             "    FOR EACH ROW EXECUTE FUNCTION users_created_on_record();\n", ""),
+    Mutation("M47", "Proof stops comparing roles with the record", "app/ledger/proof.py",
+             'if entry["details"].get("role") != user["role"]:', "if False:"),
 ]
 
 

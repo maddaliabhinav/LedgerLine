@@ -203,8 +203,9 @@ FLAG_QUERIES = {
                   "SELECT * FROM journal WHERE reason_code = 'INTEGRITY_BACKSTOP'"),
     "reversals": ("Administrator reversals",
                   "SELECT * FROM journal WHERE kind = 'REVERSAL'"),
-    "control_changes": ("Freezes, overdraft limits and user changes",
-                        "SELECT * FROM journal WHERE kind IN ('ACCOUNT_STATUS','OVERDRAFT_LIMIT','USER_STATUS')"),
+    "control_changes": ("Freezes, overdraft limits, user changes and auditor-access decisions",
+                        "SELECT * FROM journal WHERE kind IN ('ACCOUNT_STATUS','OVERDRAFT_LIMIT','USER_STATUS',"
+                        "'ACCESS_DECISION')"),
     "large_deposits": ("Deposits of Rs 5,00,000 or more",
                        "SELECT * FROM journal WHERE kind = 'DEPOSIT' AND status = 'posted' AND amount >= 50000000"),
 }

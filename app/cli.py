@@ -1,7 +1,8 @@
 """Command line: python -m app.cli <command>
 
-  migrate            create the schema (idempotent) and the GENESIS journal entry
-  seed [--if-empty]  demo users, accounts and history (through the real engine)
+  migrate            create the schema and the GENESIS entry, or upgrade an existing one (idempotent)
+  seed [--if-empty]  demo users, accounts and history (through the real engine), and one auditor
+                     request waiting for an administrator
   verify             run the full proof and print the result (exit 1 if anything fails)
   export FILE        write an evidence bundle for tools/verify_bundle.py
   keygen             print a fresh random LEDGER_SIGNING_KEY value
@@ -22,9 +23,16 @@ from .ledger import admin_ops, engine, proof
 from .ledger.journal import append_entry
 from .signing import get_signer
 
-SCHEMA_FILE = Path(__file__).with_name("schema.sql")
-SCHEMA_VERSION = 1
+SCHEMA_FILE = Path(__file__).with_name("schema.sql")             # version 1
+MIGRATIONS_DIR = Path(__file__).with_name("migrations")          # 002_*.sql, 003_*.sql, ... on top of it
 MIGRATION_LOCK = 727_001
+
+
+def _migrations() -> list[tuple[int, Path]]:
+    return sorted((int(p.name[:3]), p) for p in MIGRATIONS_DIR.glob("[0-9][0-9][0-9]_*.sql"))
+
+
+SCHEMA_VERSION = max([1] + [version for version, _ in _migrations()])
 
 DEMO_USERS = [
     # username, display name, role, password
@@ -34,6 +42,8 @@ DEMO_USERS = [
     ("rahul", "Rahul Verma", "holder", "LedgerRahul#2026"),
     ("acme", "Acme Supplies Pvt Ltd", "holder", "LedgerAcme#2026"),
 ]
+# Asked for auditor access at sign-up; cannot sign in until an administrator approves.
+DEMO_REQUEST = ("meera", "Meera Nair (External Auditor)", "LedgerMeera#2026")
 
 
 def migrate() -> None:
@@ -43,10 +53,21 @@ def migrate() -> None:
             exists = conn.execute("SELECT to_regclass('ledgerline.schema_version') IS NOT NULL AS e").fetchone()["e"]
             if exists:
                 version = conn.execute("SELECT max(version) AS v FROM ledgerline.schema_version").fetchone()["v"]
-                print(f"schema already at version {version}")
+                pending = [(v, path) for v, path in _migrations() if v > version]
+                if not pending:
+                    print(f"schema already at version {version}")
+                    return
+                # An existing database: apply only what it lacks, all or nothing.
+                with conn.transaction():
+                    for _, path in pending:
+                        conn.execute(path.read_text(encoding="utf-8"))
+                    conn.execute("SET search_path TO ledgerline, public")
+                print(f"schema upgraded from version {version} to {pending[-1][0]}")
                 return
             with conn.transaction():
                 conn.execute(SCHEMA_FILE.read_text(encoding="utf-8"))
+                for _, path in _migrations():
+                    conn.execute(path.read_text(encoding="utf-8"))
                 conn.execute("SET search_path TO ledgerline, public")
                 cur = conn.cursor()
                 cur.execute("SELECT id, account_no, kind, allow_negative FROM accounts ORDER BY id")
@@ -88,8 +109,12 @@ def seed(if_empty: bool = False) -> None:
 
 
 def _seed_demo() -> None:
+    # The first administrator comes from this command line (no actor); everyone
+    # else is created by that administrator, on the record.
+    first = None
     for username, name, role, password in DEMO_USERS:
-        admin_ops.create_user(None, username, name, role, password)
+        created = admin_ops.create_user(first, username, name, role, password)
+        first = first or created["id"]
     ids = {u[0]: _user_id(u[0]) for u in DEMO_USERS}
     admin = engine.Actor(ids["admin"], "admin", "admin")
     holder = {u: engine.Actor(ids[u], u, "holder") for u in ("priya", "rahul", "acme")}
@@ -123,9 +148,11 @@ def _seed_demo() -> None:
 
     # One payment Sentinel holds for review, so the admin queue is not empty on day one.
     engine.transfer(holder["acme"], accts["acme"], accts["rahul"], 2_80_000 * rupees, "Urgent advance", key())
+    admin_ops.request_auditor_access(*DEMO_REQUEST)
     print("seeded demo data:")
     for username, _, role, password in DEMO_USERS:
         print(f"  {role:8s} {username:8s} {password}")
+    print(f"  request  {DEMO_REQUEST[0]:8s} {DEMO_REQUEST[2]}   (auditor access, waiting for an administrator)")
     for label, number in accts.items():
         print(f"  account  {label:14s} {number}")
 
