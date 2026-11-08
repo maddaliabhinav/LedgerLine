@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request
+from fastapi.responses import JSONResponse
 
 from .. import db
 from ..config import get_settings
-from ..errors import Unauthorized
+from ..errors import Forbidden, Unauthorized
 from ..ledger import admin_ops
 from ..money import money_view
 from ..security import create_access_token, dummy_hash, login_throttle, signup_throttle, verify_password
@@ -16,6 +17,7 @@ router = APIRouter(prefix="/api", tags=["auth"])
 PERMISSIONS = {
     "admin": ["view all accounts and statements", "open accounts", "freeze / unfreeze / close accounts",
               "set overdraft limits (up to Rs 50,000)", "create and deactivate users",
+              "approve or decline requests for auditor access",
               "record deposits (money arriving from outside)", "approve or reject held payments",
               "reverse a posted entry (with a reason)", "run proofs, reconciliations and exports"],
     "holder": ["view own accounts and statements", "withdraw from own accounts",
@@ -46,8 +48,22 @@ def login(body: LoginIn, request: Request):
         cur.execute("SELECT id, username, display_name, role, password_hash, is_active, token_version "
                     "FROM users WHERE username = %s", (username,))
         user = cur.fetchone()
+        request_row = None
+        if user is None:
+            cur.execute("SELECT status, password_hash FROM access_requests WHERE username = %s "
+                        "AND status <> 'approved' ORDER BY id DESC LIMIT 1", (username,))
+            request_row = cur.fetchone()
     # Always run one password hash so response time does not reveal whether the user exists.
-    valid = verify_password(body.password, user["password_hash"] if user else dummy_hash())
+    stored = user["password_hash"] if user else request_row["password_hash"] if request_row else dummy_hash()
+    valid = verify_password(body.password, stored)
+    if user is None and request_row is not None and valid:
+        # The right password for an auditor request nobody has approved. Still no
+        # token: say why, but only to someone who knows the password.
+        if request_row["status"] == "pending":
+            raise Forbidden("your request for auditor access is waiting for an administrator's approval",
+                            code="APPROVAL_PENDING")
+        raise Forbidden("your request for auditor access was declined by an administrator",
+                        code="ACCESS_DECLINED")
     if not user or not valid or not user["is_active"]:
         login_throttle.fail(ip, username)
         raise Unauthorized("wrong username or password", code="BAD_CREDENTIALS")
@@ -59,9 +75,19 @@ def login(body: LoginIn, request: Request):
 
 @router.post("/auth/register", status_code=201)
 def register(body: SignUpIn, request: Request):
-    """Public self-service sign-up: always an account holder with one Rs 0 account.
-    Admins and auditors are created only by an admin (POST /api/users)."""
+    """Public self-service sign-up.
+
+    role "holder" (the default): an account holder with one Rs 0 account, signed in at once (201).
+    role "auditor": a REQUEST only (202, no token). Nobody can sign in with it until an
+    administrator approves it. Administrator access is never self-service (422)."""
     signup_throttle.attempt(_client_ip(request))
+    if body.role == "auditor":
+        req = admin_ops.request_auditor_access(body.username, body.display_name, body.password)
+        return JSONResponse(status_code=202, content={
+            "status": "pending",
+            "message": "Your request for auditor access is waiting for an administrator. "
+                       "You can sign in once it is approved.",
+            "request": admin_ops.access_request_view(req)})
     user, acct = admin_ops.register_holder(body.username, body.display_name, body.password)
     token, expires_in = create_access_token(user)
     return {"access_token": token, "token_type": "bearer", "expires_in": expires_in,

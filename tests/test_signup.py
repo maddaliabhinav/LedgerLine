@@ -1,5 +1,6 @@
 """Public self-service sign-up: anyone can become an account holder with an
-empty account - and nothing more."""
+empty account - and nothing more. (Asking for auditor access is a request an
+administrator decides: tests/test_access_requests.py.)"""
 
 from __future__ import annotations
 
@@ -48,12 +49,16 @@ def test_sign_up_gives_an_account_holder_with_one_empty_account(server):
     assert_books_balance()
 
 
-def test_sign_up_cannot_choose_a_role_or_a_balance(server):
-    for extra in ({"role": "admin"}, {"role": "auditor"}, {"balance": "100000"}, {"is_active": True}):
+def test_sign_up_cannot_choose_admin_or_a_balance(server):
+    for extra in ({"role": "admin"}, {"role": "ADMIN"}, {"role": "superuser"}, {"role": None},
+                  {"balance": "100000"}, {"is_active": True}):
         name = unique("sneaky")
         r = sign_up(server, username=name, **extra)
         assert r.status_code == 422, (extra, r.text)
         assert users_named(name) == 0
+        with db.connect() as conn:
+            assert conn.execute("SELECT count(*) AS n FROM access_requests WHERE username = %s",
+                                (name,)).fetchone()["n"] == 0
 
 
 def test_sign_up_refuses_taken_names_and_weak_input(server):

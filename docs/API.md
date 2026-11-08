@@ -22,6 +22,8 @@ Base URL: your deployment (for example `https://ledgerline.onrender.com`). Inter
 | `POST /api/accounts/{no}/freeze`, `/unfreeze`, `/close` | ✓ | – | – | none (stops movement) |
 | `POST /api/accounts/{no}/overdraft` | ✓ | – | – | none (moves the floor to −limit, max ₹50,000) |
 | `POST /api/users`, `/api/users/{u}/deactivate`, `/activate` | ✓ | – | – | none |
+| `GET /api/access-requests` | ✓ | – | ✓ | read |
+| `POST /api/access-requests/{id}/approve`, `/decline` | ✓ | – | – | none (creates the auditor on approval; the decision is journaled) |
 | `GET /api/accounts`, `/api/accounts/{no}`, `/statement` | all | own only | all | read |
 | `GET /api/payees/{no}` | ✓ | ✓ | ✓ | read (name and status only) |
 | `GET /api/reviews`, `POST /api/reviews/{seq}/ai-note` | ✓ | – | ✓ | none (an AI note is journaled) |
@@ -29,7 +31,7 @@ Base URL: your deployment (for example `https://ledgerline.onrender.com`). Inter
 | `POST /api/audit/reconciliation` | ✓ | – | ✓ | none (the summary is journaled) |
 | `GET /api/entries/{seq}` | ✓ | entries touching own accounts | ✓ | read + hash/signature check |
 | `GET /api/public-key`, `GET /api/health` | public | public | public | read |
-| `POST /api/auth/register` (sign-up) | public | public | public | none: creates an account holder with one ₹0 account |
+| `POST /api/auth/register` (sign-up) | public | public | public | none: an account holder with one ₹0 account, or a request for auditor access |
 
 ---
 
@@ -39,11 +41,15 @@ Base URL: your deployment (for example `https://ledgerline.onrender.com`). Inter
 Anyone. Body `{"username": "priya", "password": "…"}`.
 `200` → `{"access_token", "token_type": "bearer", "expires_in": 3600, "user": {"username", "name", "role", "permissions": [...]}}`.
 `401 BAD_CREDENTIALS`. `429 TOO_MANY_REQUESTS` after 10 failures in 5 minutes from one IP.
+`403 APPROVAL_PENDING` or `403 ACCESS_DECLINED` when the username belongs to an auditor request (not a user) and the password matches it: no token. A wrong password gets the usual `401`, so nobody learns a request exists without its password.
 
 ### `POST /api/auth/register`
-Anyone (public sign-up, the "Create user" tab on the home page). Body `{"username": "meera", "display_name": "Meera Nair", "password": "at-least-10-chars"}`.
-Always creates an **account holder** with one account named "Main account" at **₹0.00**, and signs them in. There is no role field: `{"role": "admin"}` (or any unknown field such as `balance`) returns `422`. Admins and auditors are created only by an admin (`POST /api/users`). The new user and account are journaled (`USER_CREATED`, `ACCOUNT_OPENED`, marked `"via": "self-service sign-up"`).
-`201` → the same shape as login, plus `"account": {"account_no", "name", "balance"}`. `409` username taken · `422` invalid input · `429 TOO_MANY_REQUESTS` after 10 sign-up attempts in 10 minutes from one address.
+Anyone (public sign-up, the "Create user" tab on the home page). Body `{"username": "kavya", "display_name": "Kavya Reddy", "password": "at-least-10-chars", "role": "holder"}`. `role` is `"holder"` (the default) or `"auditor"`; anything else, `"admin"` included, returns `422`, as does any unknown field such as `balance`.
+
+* `"holder"` → `201`: creates an **account holder** with one account named "Main account" at **₹0.00**, and signs them in. Same shape as login, plus `"account": {"account_no", "name", "balance"}`. The new user and account are journaled (`USER_CREATED`, `ACCOUNT_OPENED`, marked `"via": "self-service sign-up"`).
+* `"auditor"` → `202`: files a **request** and creates no user. No token: `{"status": "pending", "message", "request": {"id", "username", "name", "role": "auditor", "status": "pending", "requested_at", ...}}`. Signing in answers `403 APPROVAL_PENDING` until an administrator decides.
+
+`409` username taken (by a user or by a request still waiting) · `422` invalid input · `429 TOO_MANY_REQUESTS` after 10 sign-up attempts in 10 minutes from one address. Administrators are created only by an administrator (`POST /api/users`).
 
 ### `POST /api/auth/logout`
 Any signed-in user. Revokes **all** of that user's tokens. `200 {"ok": true}`.
@@ -110,14 +116,21 @@ A **new** entry moves the money back the way it came: transfer → payee to paye
 * `POST /api/accounts/{no}/freeze` | `/unfreeze` | `/close` (admin): `{"reason": "…"}`. Closing needs a zero balance and no payments under review.
 * `POST /api/accounts/{no}/overdraft` (admin): `{"limit": "5000", "reason": "…"}`, ₹0–₹50,000. `409` if the balance is already below the new floor.
 
+## Auditor requests (from sign-up)
+
+* `GET /api/access-requests?state=pending|decided` (admin, auditor): waiting requests oldest first, or the last 100 decisions with who decided, when, the note and the `decision_seq` journal entry. Never a password hash.
+* `POST /api/access-requests/{id}/approve` (admin), body `{"note": "…"}` (optional, ≤140 characters, recorded): creates the **auditor** from the stored request (never from this body) and journals `ACCESS_DECISION` followed by `USER_CREATED`, which points back at the decision (`ref_seq`). `200` → `{"request", "user": {"username", "name", "role": "auditor"}, "entry": {"seq"}}`.
+* `POST /api/access-requests/{id}/decline` (admin), same body: journals `ACCESS_DECISION` and creates no user. `200` → `{"request", "user": null, "entry"}`. The person can still ask again later; that is a new request and a new decision.
+* A request is decided **once**. The second decision, including two administrators clicking at the same moment, gets `409 ALREADY_DECIDED`. `404` for an unknown id, `403` for anyone but an administrator. The database refuses a decision that is not journaled by an administrator, or a second one (`LL012`).
+
 ## Review and audit (admin, auditor)
 
 * `GET /api/reviews?state=pending|decided|all`: held payments with Sentinel's score, reasons and features, the latest AI note, and the decision if any.
 * `POST /api/reviews/{seq}/ai-note`: asks the LLM (if configured) for a reviewer note. No money moves; the note is journaled as `AI_NOTE` with the model name. The same facts reuse the cached note.
-* `GET /api/audit/proof`: replays the whole journal and returns 13 checks (chain, signatures, head, double entry, replay, floors, stored balances, conservation, suspense, single decisions, exactly-once, refusal balances, backstop) plus totals.
+* `GET /api/audit/proof`: replays the whole journal and returns 14 checks (chain, signatures, head, double entry, replay, floors, stored balances, conservation, suspense, single decisions, exactly-once, refusal balances, access, backstop) plus totals. *Access* checks that every user has exactly one `USER_CREATED` entry with the role it has now, and that every auditor or admin was created by another administrator.
 * `POST /api/audit/reconciliation`: the proof plus a plain-English summary (LLM if configured, template otherwise), journaled.
 * `GET /api/audit/journal?kind=&status=&account=&before_seq=&limit=`: the hash-chained journal.
-* `GET /api/audit/flags`: held payments, elevated scores, authorisation refusals, database backstops (should be empty), reversals, control changes, large deposits, key reuse.
+* `GET /api/audit/flags`: held payments, elevated scores, authorisation refusals, database backstops (should be empty), reversals, control changes (including auditor-access decisions), large deposits, key reuse.
 * `GET /api/audit/duplicates`: every replayed request, key reuse and in-flight retry, with the original entry.
 * `GET /api/audit/export`: evidence bundle for `python tools/verify_bundle.py bundle.json --public-key <key>`.
 
@@ -133,10 +146,13 @@ A **new** entry moves the money back the way it came: transfer → payee to paye
 |---|---|---|:-:|
 | 401 | `UNAUTHORIZED`, `TOKEN_INVALID`, `TOKEN_EXPIRED`, `SESSION_REVOKED`, `BAD_CREDENTIALS` | sign in again | – |
 | 403 | `ROLE_NOT_PERMITTED`, `NOT_ACCOUNT_OWNER` | not allowed | ✓ |
+| 403 | `APPROVAL_PENDING`, `ACCESS_DECLINED` | sign-in for an auditor request that is waiting / was declined (right password only) | – |
+| 403 | `FORBIDDEN` | an admin-only or staff-only endpoint | – |
 | 404 | `NOT_FOUND`, `DESTINATION_NOT_FOUND` | no such thing | dest ✓ |
 | 409 | `INSUFFICIENT_FUNDS`, `DAILY_LIMIT_EXCEEDED`, `ACCOUNT_NOT_ACTIVE`, `DESTINATION_NOT_ACTIVE`, `HOLD_ALREADY_DECIDED`, `ALREADY_REVERSED` | refused by a business rule | ✓ |
 | 409 | `INTEGRITY_BACKSTOP` | the database refused a write the app attempted (a bug signal); nothing moved | ✓ |
 | 409 | `IDEMPOTENCY_KEY_REUSED`, `REQUEST_IN_PROGRESS` | key misuse / first request still running; nothing moved | in the duplicates log |
+| 409 | `ALREADY_DECIDED`, `CONFLICT` | auditor request already decided / username taken, or another state conflict | – |
 | 422 | `VALIDATION_FAILED`, `SAME_ACCOUNT`, `DESTINATION_NOT_ALLOWED`, `NOT_REVERSIBLE` | malformed or impossible | the last three ✓ |
 | 428 | `IDEMPOTENCY_KEY_REQUIRED` | send an Idempotency-Key | – |
 | 429 | `TOO_MANY_REQUESTS` | login or sign-up throttled | – |
@@ -156,4 +172,16 @@ curl -i $URL/api/transfers -H "Authorization: Bearer $TOKEN" -H 'content-type: a
 # two withdrawals at the same instant from the same account
 for i in 1 2; do curl -s $URL/api/withdrawals -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
   -H "Idempotency-Key: race-$i-$RANDOM" -d '{"account":"LL-1001","amount":"40000"}' & done; wait
+
+# ask for auditor access (202, no token), then try to sign in (403 APPROVAL_PENDING)
+curl -s $URL/api/auth/register -H 'content-type: application/json' \
+  -d '{"username":"kavya","display_name":"Kavya Reddy","password":"kavya-password-1","role":"auditor"}'
+curl -s $URL/api/auth/login -H 'content-type: application/json' -d '{"username":"kavya","password":"kavya-password-1"}'
+
+# as admin: see the queue, approve request 1 with a note (the seeded request from "meera" is waiting too)
+ADMIN=$(curl -s $URL/api/auth/login -H 'content-type: application/json' \
+  -d '{"username":"admin","password":"LedgerAdmin#2026"}' | python -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')
+curl -s $URL/api/access-requests -H "Authorization: Bearer $ADMIN"
+curl -s $URL/api/access-requests/1/approve -H "Authorization: Bearer $ADMIN" -H 'content-type: application/json' \
+  -d '{"note":"confirmed with the audit firm"}'
 ```

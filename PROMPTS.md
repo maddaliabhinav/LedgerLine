@@ -78,6 +78,15 @@ that first added the files. Later entries link the exact fix commit.
 * **What was wrong:** The one colour meant to draw the eye was spent on the most common, least interesting state.
 * **How it was caught:** Screenshot review of the statement page after the change.
 * **What we did instead:** "Posted" is now a quiet white outline. Gold is kept for buttons, held payments, the active tab and the proof seal; red only for refusals and errors.
+* **Fixed in:** [dd5f527](https://github.com/maddaliabhinav/LedgerLine/commit/dd5f5278127c3ff014a9ab6c6a4187fc8efad95c)
+
+### 8. 2026-11-08 — A schema change that would have broken every existing install (deploy)
+
+* **Asked:** On the home page, let people choose "account holder" or "auditor" when they create a user. An auditor account must wait until an administrator accepts the request.
+* **It produced:** A sound design: a separate `access_requests` table (a request is not a user), a locked, decide-once approval journaled as `ACCESS_DECISION`, and database guards for each rule (`LL012`–`LL014`). It also shipped a migration, `app/migrations/002_access_requests.sql`. But the server would still start happily on a database that had not been migrated.
+* **What was wrong:** Holder sign-up, admin user creation and sign-in with an unknown username now read `access_requests`. On a database created by the previous version, for example the one on our own laptop, all three would have failed with a 500 (`relation "access_requests" does not exist`) until someone thought to run `migrate` again. Nothing would have said so.
+* **How it was caught:** Before delivering, we asked "what happens to the database that already exists?" We then built a version-1 database with the previous code and ran the new code's sign-up, user creation and sign-in paths against it. All three raised `UndefinedTable`.
+* **What we did instead:** `migrate` now upgrades an existing database in place (it applies only the migrations it lacks, in one transaction, and is safe to re-run). The server checks the schema version at startup and refuses to start on an old one, with the fix in the message: `Run: python -m app.cli migrate`. Checked both ways: refused on version 1, then upgraded, started, and all 14 proof checks passed over the old history.
 * **Fixed in:** _add link after pushing_
 
 ---

@@ -293,9 +293,14 @@ function signedIn(data) {
   location.hash = HOME[state.user.role];
 }
 
-function signInForm() {
+const SIGN_IN_ANSWERS = {
+  APPROVAL_PENDING: "Your auditor request is waiting for an administrator. You can sign in once it is approved.",
+  ACCESS_DECLINED: "An administrator declined your auditor request. Ask them if you think this is a mistake.",
+};
+
+function signInForm(notice) {
   const err = h("p", { class: "form-error", role: "alert" });
-  const user = h("input", { id: "u", name: "username", autocomplete: "username", required: true });
+  const user = h("input", { id: "u", name: "username", autocomplete: "username", required: true, value: notice ? notice.username : null });
   const pass = h("input", { id: "p", name: "password", type: "password", autocomplete: "current-password", required: true });
   const button = h("button", { class: "btn", type: "submit" }, "Sign in");
   return h("form", {
@@ -304,23 +309,49 @@ function signInForm() {
       button.disabled = true; err.textContent = "";
       const r = await api("POST", "/api/auth/login", { username: user.value, password: pass.value }, { anonymous: true });
       button.disabled = false;
-      if (!r.ok) { err.textContent = errorText(r); return; }
+      if (!r.ok) {
+        const code = r.data && r.data.error ? r.data.error.code : null;
+        err.classList.toggle("waiting", code === "APPROVAL_PENDING");
+        err.textContent = SIGN_IN_ANSWERS[code] || errorText(r);
+        return;
+      }
       signedIn(r.data);
     },
   },
     h("h2", { class: "sr-only" }, "Sign in"),
+    notice ? h("div", { class: "auth-notice", role: "status" }, notice.text) : null,
     h("div", { class: "field" }, h("label", { for: "u" }, "Username"), user),
     h("div", { class: "field" }, h("label", { for: "p" }, "Password"), pass),
     err, button);
 }
 
-function createUserForm() {
+const ACCOUNT_TYPES = [
+  { role: "holder", title: "Account holder", text: "Send and receive money. Ready straight away, with an empty ₹0 account." },
+  { role: "auditor", title: "Auditor", text: "Read-only view of every account and the full journal, once an administrator approves it." },
+];
+
+function createUserForm(onRequested) {
   const err = h("p", { class: "form-error", role: "alert" });
   const user = h("input", { id: "c-user", name: "username", autocomplete: "username", required: true, minlength: 3, maxlength: 32, spellcheck: "false" });
   const name = h("input", { id: "c-name", name: "name", autocomplete: "name", required: true, maxlength: 80 });
   const pass = h("input", { id: "c-pass", name: "password", type: "password", autocomplete: "new-password", required: true, minlength: 10 });
   const again = h("input", { id: "c-again", name: "confirm", type: "password", autocomplete: "new-password", required: true, minlength: 10 });
   const button = h("button", { class: "btn", type: "submit" }, "Create user");
+  const note = h("p", { class: "auth-note" });
+  const radios = ACCOUNT_TYPES.map((t) => h("input", { type: "radio", name: "c-role", id: `c-role-${t.role}`, value: t.role, checked: t.role === "holder" }));
+  const choices = ACCOUNT_TYPES.map((t, i) => h("label", { class: "choice", for: `c-role-${t.role}` }, radios[i],
+    h("span", { class: "choice-title" }, t.title), h("span", { class: "choice-text" }, t.text)));
+  const role = () => radios.find((r) => r.checked).value;
+  const refresh = () => {
+    choices.forEach((c, i) => c.classList.toggle("selected", radios[i].checked));
+    const auditor = role() === "auditor";
+    button.textContent = auditor ? "Request auditor access" : "Create user";
+    note.textContent = auditor
+      ? "This sends a request to the administrators. No account exists until one of them approves it; then you sign in with the password you choose here."
+      : "Your first account opens with ₹0.00. Money arrives when an administrator records a deposit.";
+  };
+  for (const r of radios) r.addEventListener("change", refresh);
+  refresh();
   return h("form", {
     onsubmit: async (e) => {
       e.preventDefault();
@@ -328,31 +359,35 @@ function createUserForm() {
       if (pass.value !== again.value) { err.textContent = "The two passwords are different."; again.focus(); return; }
       button.disabled = true;
       const r = await api("POST", "/api/auth/register",
-        { username: user.value.trim().toLowerCase(), display_name: name.value.trim(), password: pass.value }, { anonymous: true });
+        { username: user.value.trim().toLowerCase(), display_name: name.value.trim(), password: pass.value, role: role() }, { anonymous: true });
       button.disabled = false;
       if (!r.ok) { err.textContent = errorText(r); return; }
+      if (r.status === 202) { onRequested(r.data.request); return; }
       toast(`Welcome, ${r.data.user.name}. Your account ${r.data.account.account_no} is open with ₹0.00.`);
       signedIn(r.data);
     },
   },
     h("h2", { class: "sr-only" }, "Create user"),
+    h("fieldset", { class: "choices" }, h("legend", {}, "Account type"), choices),
     h("div", { class: "field" }, h("label", { for: "c-user" }, "Username"), user,
       h("span", { class: "hint" }, "3 to 32 characters: lowercase letters, digits, . _ -")),
     h("div", { class: "field" }, h("label", { for: "c-name" }, "Full name"), name),
     h("div", { class: "field" }, h("label", { for: "c-pass" }, "Password"), pass,
       h("span", { class: "hint" }, "At least 10 characters.")),
     h("div", { class: "field" }, h("label", { for: "c-again" }, "Confirm password"), again),
-    err, button,
-    h("p", { class: "auth-note" }, "New users are account holders. Your first account opens with ₹0.00; money arrives when an administrator records a deposit."));
+    err, button, note);
 }
 
 async function pageLogin() {
   const panel = h("div");
   const tabs = {};
-  const show = (which) => {
+  const show = (which, notice) => {
     for (const [k, b] of Object.entries(tabs)) b.setAttribute("aria-pressed", String(k === which));
-    set(panel, which === "signin" ? signInForm() : createUserForm());
-    $("input", panel)?.focus();
+    set(panel, which === "signin" ? signInForm(notice) : createUserForm((req) => show("signin", {
+      username: req.username,
+      text: `Request sent. An administrator has to approve auditor access for ${req.username}; after that, sign in here with the password you chose.`,
+    })));
+    $(notice ? "#p" : "input", panel)?.focus();
   };
   tabs.signin = h("button", { type: "button", class: "auth-tab", onclick: () => show("signin") }, "Sign in");
   tabs.create = h("button", { type: "button", class: "auth-tab", onclick: () => show("create") }, "Create user");
@@ -676,11 +711,14 @@ function cell(v, k) { return h("div", { class: "cell" }, h("div", { class: "v wi
 /* ------------------------------------------------------------------ admin / auditor: overview */
 async function pageOverview(main) {
   const wrap = page(main, "Overview", "The state of the books right now.");
-  const [proof, reviews] = await Promise.all([api("GET", "/api/audit/proof"), api("GET", "/api/reviews?state=pending")]);
+  const isAdmin = state.user.role === "admin";
+  const [proof, reviews, asks] = await Promise.all([api("GET", "/api/audit/proof"), api("GET", "/api/reviews?state=pending"),
+    isAdmin ? api("GET", "/api/access-requests") : null]);
   if (!proof.ok) { wrap.append(h("p", {}, errorText(proof))); return; }
   const p = proof.data;
   const failed = p.checks.filter((c) => !c.ok);
   const pending = reviews.ok ? reviews.data.reviews.length : 0;
+  const asking = asks && asks.ok ? asks.data.requests.length : 0;
   wrap.append(
     h("section", { class: "panel proof-top" },
       seal(p.head.hash, p.head.seq, { ok: p.ok }),
@@ -694,8 +732,9 @@ async function pageOverview(main) {
           total(String(p.counts.replays.replayed || 0), "duplicate requests answered from storage")),
         h("div", { class: "row actions" },
           h("a", { class: "btn", href: "#/reviews" }, pending ? `Review ${pending} held payment${pending > 1 ? "s" : ""}` : "No payments waiting"),
+          asking ? h("a", { class: "btn secondary", href: "#/users" }, "Auditor requests", h("span", { class: "count" }, String(asking))) : null,
           h("a", { class: "btn secondary", href: "#/proof" }, "See every check"),
-          state.user.role === "admin" ? h("a", { class: "btn secondary", href: "#/users" }, "Create user") : null))));
+          isAdmin ? h("a", { class: "btn secondary", href: "#/users" }, "Create user") : null))));
 }
 function total(v, k) { return h("div", { class: "total" }, h("div", { class: "v wide-num" }, v), h("div", { class: "k" }, k)); }
 
@@ -828,8 +867,11 @@ async function setOverdraft(acct) {
 async function pageUsers(main) {
   const isAdmin = state.user.role === "admin";
   const wrap = page(main, "People", "Who can sign in, and what they can do.");
-  const r = await api("GET", "/api/users");
+  const [r, waiting, decided] = await Promise.all([api("GET", "/api/users"), api("GET", "/api/access-requests"),
+    api("GET", "/api/access-requests?state=decided")]);
   if (!r.ok) { wrap.append(h("p", {}, errorText(r))); return; }
+  wrap.append(accessRequests(waiting.ok ? waiting.data.requests : [], decided.ok ? decided.data.requests : [], isAdmin),
+    h("div", { class: "page-head" }));
   if (isAdmin) {
     const u = h("input", { id: "n-user", placeholder: "username" });
     const n = h("input", { id: "n-name", placeholder: "Full name" });
@@ -859,6 +901,52 @@ async function pageUsers(main) {
       } }, p.active ? "Deactivate" : "Activate") : null)));
   }
   wrap.append(h("div", { class: "table-wrap" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, "Username"), h("th", {}, "Name"), h("th", {}, "Role"), h("th", {}, "Accounts"), h("th", {}, "Status"), h("th", {}, ""))), body)));
+}
+
+function accessRequests(waiting, decided, isAdmin) {
+  const history = decided.length ? h("details", { class: "history" },
+    h("summary", {}, `Decided requests (${decided.length})`),
+    h("div", { class: "table-wrap" }, h("table", {},
+      h("thead", {}, h("tr", {}, ["Name", "Username", "Decision", "By", "When", "Entry"].map((x) => h("th", {}, x)))),
+      h("tbody", {}, decided.slice(0, 25).map((q) => h("tr", {},
+        h("td", {}, q.name), h("td", {}, q.username),
+        h("td", {}, h("span", { class: "mark " + (q.status === "approved" ? "ok" : "bad") }, q.status)),
+        h("td", {}, q.decided_by ? q.decided_by.name : "—"), h("td", {}, when(q.decided_at)),
+        h("td", {}, h("button", { class: "btn link small", onclick: () => openEntry(q.decision_seq) }, `#${q.decision_seq}`)))))))) : null;
+  return h("section", { class: "panel" },
+    h("div", { class: "spread" }, h("h2", {}, "Auditor requests"),
+      waiting.length ? h("span", { class: "mark held" }, `${waiting.length} waiting`) : null),
+    h("p", { class: "muted small" }, isAdmin
+      ? "People who asked for auditor access when they signed up. Nobody can sign in with a request until you approve it, and your decision is a signed journal entry."
+      : "People who asked for auditor access when they signed up. Only an administrator can decide, and every decision is a signed journal entry."),
+    waiting.length ? h("div", { class: "requests" }, waiting.map((q) => requestRow(q, isAdmin))) : h("p", { class: "empty-line" }, "No requests waiting."),
+    history);
+}
+
+function requestRow(q, isAdmin) {
+  let actions = null;
+  if (isAdmin) {
+    const note = h("input", { maxlength: 140, placeholder: "What did you check? (recorded)", "aria-label": `Decision note for ${q.username}` });
+    const approve = h("button", { class: "btn small" }, "Approve");
+    const decline = h("button", { class: "btn danger small" }, "Decline");
+    const act = async (verb) => {
+      approve.disabled = decline.disabled = true;
+      const r = await api("POST", `/api/access-requests/${q.id}/${verb}`, { note: note.value.trim() || null });
+      if (r.ok) {
+        toast(verb === "approve" ? `Approved. ${q.username} can now sign in as an auditor (entry #${r.data.entry.seq}).`
+          : `Declined. ${q.username} cannot sign in (entry #${r.data.entry.seq}).`);
+        route();
+      } else { toast(errorText(r), true); approve.disabled = decline.disabled = false; }
+    };
+    approve.addEventListener("click", () => act("approve"));
+    decline.addEventListener("click", () => act("decline"));
+    actions = h("div", { class: "row request-actions" }, note, approve, decline);
+  }
+  return h("div", { class: "request" },
+    h("div", { class: "spread" },
+      h("div", {}, h("strong", {}, q.name), h("div", { class: "small muted" }, `${q.username}, asked ${when(q.requested_at)}`)),
+      h("span", { class: "mark info" }, "wants auditor access")),
+    actions);
 }
 
 /* ------------------------------------------------------------------ proof */
@@ -915,7 +1003,7 @@ async function pageProof(main) {
 /* ------------------------------------------------------------------ journal */
 async function pageJournal(main) {
   const wrap = page(main, "Journal", "Everything that happened, in order. Each entry's hash includes the one before it.");
-  const kind = h("select", { id: "j-kind" }, ["", "DEPOSIT", "WITHDRAWAL", "TRANSFER", "HOLD", "HOLD_APPROVED", "HOLD_REJECTED", "REVERSAL", "ACCOUNT_OPENED", "ACCOUNT_STATUS", "OVERDRAFT_LIMIT", "USER_CREATED", "USER_STATUS", "AI_NOTE", "GENESIS"]
+  const kind = h("select", { id: "j-kind" }, ["", "DEPOSIT", "WITHDRAWAL", "TRANSFER", "HOLD", "HOLD_APPROVED", "HOLD_REJECTED", "REVERSAL", "ACCOUNT_OPENED", "ACCOUNT_STATUS", "OVERDRAFT_LIMIT", "USER_CREATED", "USER_STATUS", "ACCESS_DECISION", "AI_NOTE", "GENESIS"]
     .map((k) => h("option", { value: k }, k ? k.replaceAll("_", " ").toLowerCase() : "all kinds")));
   const status = h("select", { id: "j-status" }, [["", "any outcome"], ["posted", "posted"], ["refused", "refused"], ["info", "records"]].map(([v, l]) => h("option", { value: v }, l)));
   const acct = h("input", { id: "j-acct", placeholder: "LL-1001" });

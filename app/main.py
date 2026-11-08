@@ -15,6 +15,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import __version__, db
 from .api import routes_accounts, routes_admin, routes_audit, routes_auth, routes_money
+from .cli import SCHEMA_VERSION
 from .config import get_settings
 from .errors import LedgerError
 
@@ -26,13 +27,28 @@ CSP = ("default-src 'self'; script-src 'self'; style-src 'self' https://fonts.go
        "frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'")
 
 
+def _require_current_schema() -> None:
+    """Refuse to serve a database older than this code (for example right after
+    pulling an update), with the fix in the message instead of a 500 later."""
+    with db.connection() as conn:
+        exists = conn.execute("SELECT to_regclass('ledgerline.schema_version') IS NOT NULL AS e").fetchone()["e"]
+        version = conn.execute("SELECT max(version) AS v FROM ledgerline.schema_version").fetchone()["v"] \
+            if exists else 0
+    if version < SCHEMA_VERSION:
+        raise RuntimeError(f"the database schema is at version {version} but this code needs version "
+                           f"{SCHEMA_VERSION}. Run:  python -m app.cli migrate   then start the server again.")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     get_settings()          # fail fast on bad production config
     db.init_pool()
-    yield
-    db.close_pool()
+    try:
+        _require_current_schema()
+        yield
+    finally:
+        db.close_pool()     # also when startup is refused, so no pool threads are left behind
 
 
 app = FastAPI(

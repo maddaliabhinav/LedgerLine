@@ -18,6 +18,7 @@ if the defence were removed. Status is one of:
 | Exactly once | One (user, Idempotency-Key) moves money at most once and always gets the same answer. |
 | Entitlement | Money leaves a customer account only at its owner's request (or by an administrator's journaled reversal, or by the approval of a payment its owner requested). |
 | The record | Every posting, every refused attempt, every AI suggestion and every human decision is in an append-only, hash-chained, Ed25519-signed journal. |
+| Who may sign in | Administrator access is never self-service. Auditor access is granted only by an administrator's decision, on the record. A user keeps the role it was created with. |
 
 | Party | Trust |
 |---|---|
@@ -134,20 +135,29 @@ if the defence were removed. Status is one of:
 | T70 | Flood of refused attempts fills the journal / queues on the chain head. | Authenticated users only, and each attempt is small. No per-user rate limit on money endpoints. | — | Accepted (A5) |
 | T71 | The single chain head caps throughput. | A deliberate choice of correctness over speed. | — | Accepted (A8) |
 
-## H. Public sign-up ("Create user" on the home page)
+## H. Public sign-up and auditor requests ("Create user" on the home page)
+
+Anyone may become an account holder (with an empty account) or **ask** to become an auditor. A request is not a user: nothing can sign in with it until an administrator approves it.
 
 | ID | Attack | Defence | Proof | Status |
 |---|---|---|---|---|
-| T72 | **Sign up as an administrator or auditor** from the public page. | The role is not a parameter: `register_holder()` hard-codes `'holder'` in its INSERT, and the request model forbids unknown fields, so `{"role": "admin"}` is a 422. Admins and auditors are created only by an admin. | `test_sign_up_cannot_choose_a_role_or_a_balance`, `test_sign_up_gives_an_account_holder_with_one_empty_account`, attack.py. M36. | Closed |
+| T72 | **Sign up as an administrator** from the public page. | The sign-up `role` accepts only `holder` or `auditor`, so `{"role": "admin"}` is a 422, and unknown fields are refused too. A holder sign-up hard-codes `'holder'` in its INSERT. The database refuses a request for admin access (`CHECK (role = 'auditor')`) and, at commit, any admin or auditor not created on the record by *another* administrator (`LL014`). | `test_sign_up_cannot_choose_admin_or_a_balance`, `test_the_database_refuses_requests_for_admin_access`, `test_every_user_is_created_on_the_record_and_staff_only_by_an_admin`, attack.py. M36, M42, M46. | Closed |
 | T73 | Sign up for **free money** (an opening balance). | The new account opens at ₹0 (DB `LL001`); money arrives only through an admin-recorded deposit, which a new holder cannot make. | `test_sign_up_gives_an_account_holder_with_one_empty_account` | Closed |
-| T74 | **Sign-up flood**: thousands of users and accounts to bloat the journal or squat names. | At most 10 sign-up attempts per address per 10 minutes; every attempt counts, successful or not. | `test_sign_up_is_rate_limited_per_address`. M37. | Mitigated (A11) |
+| T74 | **Sign-up flood**: thousands of users and accounts to bloat the journal or squat names. | At most 10 sign-up attempts per address per 10 minutes; every attempt counts, successful or not, holder or auditor. | `test_sign_up_is_rate_limited_per_address`. M37. | Mitigated (A11) |
 | T75 | **Username probing** through "username is taken". | Usernames are not secrets (they show on statements as "initiated by"). Probing is rate-limited, passwords are scrypt-hashed and login is throttled. | — | Accepted |
+| T76 | **Use an auditor account before anyone approves it.** | Asking creates a row in `access_requests`, not in `users`, so there is nothing to sign in with: sign-in answers `403 APPROVAL_PENDING` and issues no token. The auditor is created only by the approval, in the same transaction as the signed decision. | `test_asking_for_auditor_access_creates_a_request_not_a_user`, `test_an_approved_request_becomes_an_auditor_on_the_record`, attack.py | Closed |
+| T77 | **Approve your own request**, or have anyone but an administrator decide. | Approve/decline need the admin role, re-read from the database on every request. The database also refuses a decision unless its `ACCESS_DECISION` journal entry was written by an administrator, who is named as the decider (`LL012`). | `test_only_an_administrator_can_decide`, `test_a_decision_must_be_on_the_record_and_by_an_administrator`, attack.py. M38, M43. | Closed |
+| T78 | **Two administrators decide at once** (approve and approve, or approve and decline): two auditors, or a "declined" request with a live account. | The request row is locked (`FOR UPDATE`) and its status checked under the lock, so the second decision waits and gets `409 ALREADY_DECIDED`. In the database a decision is final (`LL012`), and the proof flags any request decided twice. | `test_two_admins_deciding_at_once_make_exactly_one_decision`, `test_a_request_is_decided_exactly_once`, `test_a_decided_request_stays_decided_even_in_sql`. M39, M40, M44. | Closed |
+| T79 | **Squat a name**: sign up as a holder with a name that is waiting for approval, so the approval would create someone else, or ask for an existing user's name. | A username is unique across users *and* waiting requests, checked under one per-name lock on every path (`_claim_username`), with one waiting request per name in the database. The approval creates the user from the stored request, never from the caller's input. | `test_a_waiting_request_reserves_its_username`. M41. | Closed |
+| T80 | **Promote someone by editing their role** (an SQL `UPDATE`, or a future bug). | `users_guard` refuses any change of role or username (`LL013`). If the database owner switches the guard off, the proof's access check compares every role with its signed `USER_CREATED` entry and fails. | `test_a_user_keeps_the_role_it_was_created_with`, `test_the_proof_catches_a_role_changed_behind_the_guards`. M45, M47. | Closed (Detected for the database owner) |
+| T81 | **Probe whether a name is waiting for approval** at sign-in. | The request's state is shown only to someone who gives its password. A wrong password gets the same `BAD_CREDENTIALS` as anyone else, runs the same password-hash work, and counts against the login throttle. | `test_asking_for_auditor_access_creates_a_request_not_a_user` | Mitigated |
+| T82 | **Flood the administrators' queue** with requests. | The same per-address sign-up limit. Requests are not journal entries (only decisions are), so they cannot bloat the signed record, and declining one takes one click. | `test_sign_up_is_rate_limited_per_address` | Mitigated (A11) |
 
 ---
 
 ## Accepted risks: what is still open, and why
 
-* **A1. A malicious administrator.** An admin can reverse a legitimate transfer (with a reason) or approve a held payment that should have been rejected. Every such action is journaled, attributed and listed under the auditor's Flags. We did **not** build dual control (a second admin countersigning reversals and approvals). It is the obvious next step and would add a "pending co-signature" state to the decision flow.
+* **A1. A malicious administrator.** An admin can reverse a legitimate transfer (with a reason), approve a held payment that should have been rejected, or grant auditor access to the wrong person. Every such action is journaled, attributed and listed under the auditor's Flags. We did **not** build dual control (a second admin countersigning reversals and approvals). It is the obvious next step and would add a "pending co-signature" state to the decision flow.
 * **A2. Database owner and signing key both compromised.** They can rewrite history and re-sign it consistently. Only an *external* anchor detects this: a chain-head hash someone saved earlier (`/api/health`), a holder's signed receipt, or an auditor's exported bundle. We publish the anchor but do not push it anywhere automatically (for example to an external timestamping service).
 * **A3. Restoring an old backup** looks like an honest, shorter ledger. Same detection as A2.
 * **A4. Login throttling is per process and in memory.** With two workers, or after a restart, an attacker gets proportionally more guesses. A shared store (Redis or a DB table) would fix it. Passwords are scrypt-hashed and the demo passwords are public by design.
@@ -157,6 +167,7 @@ if the defence were removed. Status is one of:
 * **A8. Throughput.** Every append queues on one chain-head row, so expect hundreds (not tens of thousands) of entries per second. Sharding the chain per account would lift this at the cost of a single global order.
 * **A9. Key rotation.** Entries record `key_id`, but there is no rotation procedure. Changing `LEDGER_SIGNING_KEY` today makes old entries fail verification.
 * **A11. Sign-up limiting is in memory, per process and per address.** Many addresses (or more workers) get more sign-ups. A CAPTCHA or email verification would be the next step; we left it out of a demo system on purpose.
+* **A12. A request does not prove who is asking.** The administrator sees a name, a username and when they asked, and must confirm the person some other way (we have no email or employee-ID check). What we guarantee is that only an administrator can say yes, once, on the record.
 * **A10. Sentinel is heuristic.** Rules with robust statistics, not a trained model. It will miss patterns it does not encode and will sometimes hold honest payments; a person always decides.
 
 ## Things we found that are easy to miss

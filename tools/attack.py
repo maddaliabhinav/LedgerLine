@@ -6,8 +6,9 @@
 
 It opens two fresh sandbox accounts for the holder (so demo balances are not
 drained), then fires concurrent overdraws, replay storms, key reuse, theft,
-minting, malformed amounts, forged tokens, edit attempts and deadlock bait,
-and finally asks the auditor's proof whether the books still balance.
+minting, malformed amounts, forged tokens, edit attempts, deadlock bait,
+sign-ups that try to become staff, and finally asks the auditor's proof
+whether the books still balance.
 Exit code 0 = every attack was stopped.
 """
 
@@ -172,7 +173,30 @@ def main() -> int:
            f"{r2.json()['user']['role'] if r2.status_code == 201 else ''} with Rs "
            f"{r2.json()['account']['balance']['rupees'] if r2.status_code == 201 else '?'}")
 
-    # 12. Pay a system account directly.
+    # 12. Ask for auditor access, then try to use it before any administrator agrees.
+    name, secret = f"spy{uuid.uuid4().hex[:8]}", "would-be-auditor-123"
+    r1 = httpx.post(f"{args.url}/api/auth/register", timeout=60,
+                    json={"username": name, "display_name": "Would-be auditor", "password": secret, "role": "auditor"})
+    req = r1.json().get("request", {}).get("id") if r1.status_code == 202 else None
+
+    def sign_in_code() -> str:
+        r = httpx.post(f"{args.url}/api/auth/login", timeout=60, json={"username": name, "password": secret})
+        return f"{r.status_code} {r.json().get('error', {}).get('code', 'TOKEN ISSUED')}"
+
+    before = sign_in_code()
+    by_holder = holder.post(f"/api/access-requests/{req}/approve", {}, key=None).status_code if req else 0
+    by_auditor = auditor.post(f"/api/access-requests/{req}/approve", {}, key=None).status_code if req else 0
+    # Tidy up as the real administrator would: decline it. It still cannot sign in.
+    declined = admin.post(f"/api/access-requests/{req}/decline", {"note": "attack.py test request"},
+                          key=None).status_code if req else 0
+    after = sign_in_code()
+    ok = (r1.status_code == 202 and "access_token" not in r1.json() and before == "403 APPROVAL_PENDING"
+          and by_holder == 403 and by_auditor == 403 and declined == 200 and after == "403 ACCESS_DECLINED")
+    record("sign up as auditor and use it before an admin approves", ok,
+           f"request -> {r1.status_code}; sign in -> {before}; holder/auditor approve -> {by_holder}/{by_auditor}; "
+           f"after decline -> {after}")
+
+    # 13. Pay a system account directly.
     r = holder.post("/api/transfers", {"from_account": b, "to_account": "SYS-SUSPENSE", "amount": "1"})
     record("send money straight into a system account", r.status_code == 422, f"{r.status_code}")
 
