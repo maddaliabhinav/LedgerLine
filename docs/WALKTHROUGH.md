@@ -70,7 +70,7 @@ System accounts: `SYS-EXTERNAL` (the outside world; the only account allowed bel
 * `journal.py`: `append_entry()`, the **only** writer of journal rows and postings. It locks the chain head, computes each posting's expected balance, hashes, signs, inserts and advances the head.
 * `accounts.py`: `lock()` takes `SELECT … FOR UPDATE` on customer accounts **in ascending id order**.
 * `idempotency.py`: claim (INSERT first), complete (store the exact response), answer duplicates.
-* `proof.py`: replays the whole journal and runs 15 checks. `statements.py`: statements. `admin_ops.py`: open, freeze, overdraft, users, auditor requests (`request_auditor_access`, `decide_access_request`). `ai_notes.py`: puts AI output on the record.
+* `proof.py`: replays the whole journal and runs 15 checks. `statements.py`: statements. `admin_ops.py`: open, freeze, overdraft, users (administrators only from the main administrator), auditor requests (`request_auditor_access`, `decide_access_request`) and `change_password`. `details.py`: personal details (`submit` by the person, `decide` by another administrator). `ai_notes.py`: puts AI output on the record.
 * `app/signing.py`: canonical JSON, SHA-256 and Ed25519.
 
 The shape of every money request (top of `engine.py`):
@@ -90,13 +90,14 @@ COMMIT                                 (deferred double-entry check runs here)
 
 ## Phase 3: auth and the API (`app/api/`, `app/security.py`, `app/main.py`)
 
-* Passwords: stdlib scrypt. Tokens: HS256 JWT with `exp` and a `tv` (token version).
+* Passwords: stdlib scrypt. Tokens: HS256 JWT with `exp` and a `tv` (token version). `POST /api/me/password` changes your own password (current one required, wrong guesses throttled like sign-in) and moves `tv` on, which ends every other session.
 * Public sign-up (`POST /api/auth/register`) offers two account types. **Holder** → `admin_ops.register_holder`: an account holder with one ₹0 account, signed in at once (the role is hard-coded in the SQL). **Auditor** → `admin_ops.request_auditor_access`: a row in `access_requests`, not a user, so there is nothing to sign in with (`403 APPROVAL_PENDING`). `role: "admin"` and unknown fields get a 422, and sign-ups are rate-limited per address.
 * An admin decides on the Users page (`POST /api/access-requests/{id}/approve|decline` → `admin_ops.decide_access_request`): lock the request row (`FOR UPDATE`), check it is still pending, journal `ACCESS_DECISION`, and on approval create the auditor from the stored request plus a `USER_CREATED` entry pointing back at the decision. A second decision gets `409 ALREADY_DECIDED`.
 * Usernames are unique across users **and** waiting requests: `_claim_username` takes one per-name advisory lock on every path that hands out a name, then checks both tables.
 * `deps.current_user` re-reads the user **from the database on every request**: role, `is_active`, `tv`. A demoted or deactivated user's token stops working at once, and a forged `role` claim does nothing.
 * Money routes do **not** pre-filter by role. The engine decides, so every refusal lands in the journal.
-* `schemas.py`: every body is `extra="forbid"` (no mass assignment). Amounts and memos get strict validators.
+* `routes_details.py`: personal details. `GET/PUT /api/me/details` for your own; `GET /api/users/{u}/details` and verify / send back for administrators only (auditors see just the status in `GET /api/users`).
+* `schemas.py`: every body is `extra="forbid"` (no mass assignment). Amounts, memos and personal details get strict validators (ASCII digits only, Indian mobile numbers and PIN codes, no control or direction-changing characters).
 * `main.py`: uniform error JSON and security headers (strict CSP, no framing).
 
 ## Phase 4: Sentinel, the AI layer (`app/sentinel/`)
@@ -108,19 +109,19 @@ COMMIT                                 (deferred double-entry check runs here)
 
 ## Phase 5: proof (`app/ledger/proof.py`, `tools/verify_bundle.py`)
 
-* `run_proof()` replays everything inside one REPEATABLE READ snapshot.
+* `run_proof()` replays everything inside one REPEATABLE READ snapshot: money (chain, signatures, double entry, balances, floors, conservation, suspense, decisions, exactly-once, refusals), access (every user's signed creation, the main administrator, the rule in force when each administrator was made) and personal details (who changed and who checked each version).
 * `export_bundle()` plus `tools/verify_bundle.py`: an independent offline check that trusts only the public key.
 
 ## Phase 6: the UI (`static/`)
 
-Vanilla JS, no build step. It never uses `innerHTML` for data. Each form gets a fresh idempotency key, and retries reuse it. The **Race Lab** (holder) fires real concurrent requests. The **Proof** page draws a seal from the live chain-head hash: change any past entry and the pattern changes.
+Vanilla JS, no build step. It never uses `innerHTML` for data. Each form gets a fresh idempotency key, and retries reuse it. The **Race Lab** (holder) fires real concurrent requests. The **Proof** page draws a seal from the live chain-head hash: change any past entry and the pattern changes. **Users** (People) shows roles, access, auditor requests and the personal-details queue; buttons appear only where the server would allow the action. **My details** and **Change password** are open to every role. On every page load the UI asks the server who you are (`/api/me`), so a stale saved session never shows the wrong buttons.
 
 ## Phase 7: tests that really race (`tests/`, `tools/`)
 
 * `hooks.race_window(after_balance_check=0.3)` makes the dangerous interleaving happen every time. `hooks.faults(...)` crashes a request between debit and credit. One test kills the database session mid-transfer.
 * Race tests assert the outcome **and** that the database backstop never fired.
-* `tools/mutation_check.py` removes 47 locks and checks one by one; every removal fails a test (`docs/MUTATION_REPORT.md`).
-* `tools/attack.py` runs the judges' attacks against a live URL.
+* `tools/mutation_check.py` removes 76 locks and checks one by one; every removal fails a test (`docs/MUTATION_REPORT.md`). A mutation switches a check off; it never just breaks the code around it (PROMPTS.md entry 12).
+* `tools/attack.py` runs 17 of the judges' attacks against a live URL, and can be run twice in a row (PROMPTS.md entry 13).
 
 ---
 
@@ -156,14 +157,16 @@ Then:
 python -m app.cli migrate            # schema + signed GENESIS entry (on an existing database: upgrades it)
 python -m app.cli seed               # demo people and accounts (prints them)
 uvicorn app.main:app --reload        # open http://localhost:8000
-python -m pytest                     # 132 tests, about 25 s
+python -m pytest                     # 166 tests, about 30 s
 python tools/attack.py               # in a second terminal, while the server runs
-python tools/mutation_check.py      # about 10 minutes; proves the tests bite
+python tools/mutation_check.py      # about 22 minutes; proves the tests bite
 ```
 
 Or everything in Docker: `docker compose up --build`, then open http://localhost:8000.
 
-Reset the local database: `python -m app.cli reset --yes`, then migrate and seed again.
+After pulling an update, stop the server and run `python -m app.cli migrate` again: it upgrades your database in place and keeps its history (the server refuses to start until you do).
+
+Reset the local database: `python -m app.cli reset --yes`, then migrate and seed again. Only a freshly seeded database has the sample personal details for Priya (verified) and Rahul (waiting).
 
 ---
 

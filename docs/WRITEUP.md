@@ -2,7 +2,7 @@
 
 ## What we built
 
-A money-movement system for a company's internal accounts. Anyone can sign up as an account holder (with an empty account), or ask to become an auditor, which only an administrator can grant. Holders withdraw and transfer, administrators record deposits and decide flagged payments and auditor requests, and auditors read and verify everything. Three things are guaranteed:
+A money-movement system for a company's internal accounts. Anyone can sign up as an account holder (with an empty account), or ask to become an auditor, which only an administrator can grant. Holders withdraw and transfer, administrators record deposits and decide flagged payments and auditor requests, and auditors read and verify everything. One main administrator decides who is an administrator. Every user keeps their own personal details, which another administrator verifies, and can change their own password. Three things are guaranteed:
 
 1. **The books always balance.** Every movement is double entry: one journal entry whose postings sum to zero. The sum of every balance in the system, including the "outside world" account, is always exactly 0. No customer balance goes below its floor (₹0, or an authorised overdraft of up to ₹50,000).
 2. **Exactly once.** Every money-moving request carries an Idempotency-Key. The same request arriving twice, or twenty times at once, moves money once and gets the same bytes back. Every duplicate is logged.
@@ -49,7 +49,7 @@ A test enforces the architecture: the `app/sentinel` package cannot import the e
 
 ## How we used AI to build it, and where it was wrong
 
-We built LedgerLine with an AI coding assistant and treated its output as a pull request from a confident junior engineer. Every claim about locking or idempotency was checked by a test that forces the race, and every test was checked by mutation. PROMPTS.md has the specific misses: replayed responses that were equal but not byte-identical (JSONB reorders keys), a login throttle that trusted a client-controlled header, dependency pins from memory, a test that encoded a rule the code never had, UI defects found only by screenshot, a schema change that would have broken every existing install, a mutation that kept testing a function a migration had replaced, and a proof check that judged old history by a rule that did not exist yet.
+We built LedgerLine with an AI coding assistant and treated its output as a pull request from a confident junior engineer. Every claim about locking or idempotency was checked by a test that forces the race, and every test was checked by mutation. PROMPTS.md has the specific misses: replayed responses that were equal but not byte-identical (JSONB reorders keys), a login throttle that trusted a client-controlled header, dependency pins from memory, a test that encoded a rule the code never had, UI defects found only by screenshot, a schema change that would have broken every existing install, a mutation that kept testing a function a migration had replaced, a proof check that judged old history by a rule that did not exist yet, a page the auditor was allowed to see but could not reach, a mutation that crashed the code instead of removing the check, and an attack script that would have locked itself out on its second run.
 
 ## What we deliberately did not build
 

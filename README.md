@@ -12,7 +12,8 @@ What sets it apart:
 
 * **The database is the backstop.** CHECK constraints and triggers mean even a buggy app cannot overdraw, create money or edit history.
 * **Mutation-tested tests.** `tools/mutation_check.py` removes each of 76 locks and checks; the test suite fails every time ([report](docs/MUTATION_REPORT.md)).
-* **Red-team script.** `tools/attack.py` runs the judges' attacks against any URL and prints a scorecard.
+* **Red-team script.** `tools/attack.py` runs the judges' attacks (17 of them) against any URL and prints a scorecard.
+* **Who did what is on the record too.** New administrators, removed access, auditor approvals, checks of personal details and password changes are signed journal entries, and PostgreSQL refuses any of those changes that is not. Personal data itself never enters the permanent record.
 * **AI that flags, people who decide.** Sentinel holds risky payments in suspense with explained reasons. An optional LLM writes reviewer notes that never see user text and whose every number is checked. A test proves the AI cannot reach money-moving code.
 * **Race Lab** in the UI fires real concurrent requests from your browser.
 
@@ -135,6 +136,7 @@ One money request is **one transaction**: claim the key, lock the customer rows 
 * [docs/API.md](docs/API.md): every endpoint, who may call it, what it does to the money.
 * [docs/DEPLOY.md](docs/DEPLOY.md): Render (blueprint included), Docker, Neon.
 * [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md): the five-minute demo.
+* [docs/WALKTHROUGH.md](docs/WALKTHROUGH.md): how it is built, phase by phase, running it on Windows, and interview questions with answers.
 * [docs/MUTATION_REPORT.md](docs/MUTATION_REPORT.md): which test catches each removed defence.
 
 ## Stack
@@ -155,6 +157,6 @@ app/ledger/details.py     personal details: saved by the person, checked by anot
 app/sentinel/             risk scoring and LLM notes (cannot import money code)
 app/api/                  HTTP routes, auth, validation
 static/                   web UI
-tests/                    races, retries, crashes, theft, tampering, AI guardrails
+tests/                    races, retries, crashes, theft, tampering, AI guardrails, access, personal details, passwords
 tools/                    attack.py, mutation_check.py, verify_bundle.py
 ```

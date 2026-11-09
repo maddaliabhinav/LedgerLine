@@ -26,7 +26,7 @@ PERMISSIONS = {
                "transfer from own accounts to any active customer account", "check own receipts"],
     "auditor": ["read-only: view all accounts, statements and the full journal",
                 "run proofs and reconciliations, export evidence", "ask for AI review notes",
-                "cannot move money or change anything"],
+                "cannot move money or change anyone's data but their own details and password"],
 }
 # Everyone, whatever the role.
 for _role in PERMISSIONS:
