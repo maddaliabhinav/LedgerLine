@@ -2,13 +2,13 @@
 
 ## What we built
 
-A money-movement system for a company's internal accounts. Holders withdraw and transfer, administrators record deposits and decide flagged payments, and auditors read and verify everything. Three things are guaranteed:
+A money-movement system for a company's internal accounts. Anyone can sign up as an account holder (with an empty account), or ask to become an auditor, which only an administrator can grant. Holders withdraw and transfer, administrators record deposits and decide flagged payments and auditor requests, and auditors read and verify everything. Three things are guaranteed:
 
 1. **The books always balance.** Every movement is double entry: one journal entry whose postings sum to zero. The sum of every balance in the system, including the "outside world" account, is always exactly 0. No customer balance goes below its floor (₹0, or an authorised overdraft of up to ₹50,000).
 2. **Exactly once.** Every money-moving request carries an Idempotency-Key. The same request arriving twice, or twenty times at once, moves money once and gets the same bytes back. Every duplicate is logged.
 3. **Provable history.** The journal records every posting, every refused attempt, every AI suggestion and every human decision. It is append-only (the database refuses edits), hash-chained (each entry commits to all before it) and Ed25519-signed with a key that is not in the database. Anyone can verify an exported ledger offline with only the public key.
 
-Alongside the system: a web UI for all three roles, including a **Race Lab** that fires real concurrent requests from the browser; **Sentinel**, an AI review layer that flags and explains but never decides; a red-team script (`tools/attack.py`); and a **mutation harness** (`tools/mutation_check.py`) that removes each of 35 locks and checks in turn and proves the test suite fails every time.
+Alongside the system: a web UI for all three roles, including a **Race Lab** that fires real concurrent requests from the browser; **Sentinel**, an AI review layer that flags and explains but never decides; a red-team script (`tools/attack.py`); and a **mutation harness** (`tools/mutation_check.py`) that removes each of 70 locks and checks in turn and proves the test suite fails every time.
 
 ## The integrity and concurrency model, in our own words
 
@@ -21,6 +21,12 @@ Alongside the system: a web UI for all three roles, including a **Race Lab** tha
 **Ordering and the hash chain.** Every append takes one more lock last: the single `ledger_head` row. That gives every entry a gapless sequence number and a single global order, and lets each entry's hash include the previous hash. It costs throughput (see below). We accepted that.
 
 **Idempotency.** The key row is INSERTed as the first statement of the money transaction. A concurrent duplicate's INSERT waits on the primary key until the first transaction finishes, then it reads and replays the stored response. A crash rolls the key back with everything else, so a retry is a fresh attempt. Keys are per user, never expire, and are bound to their first outcome (refusals included). Reusing a key for a different request returns 409.
+
+**Who may sign in.** Public sign-up offers two account types. A holder is ready at once, with a ₹0 account. An auditor sign-up is a *request*, stored in its own table, not a user, so there is nothing to sign in with. An administrator approves or declines it once: the request row is locked, the decision is a signed `ACCESS_DECISION` entry, and on approval the auditor is created in the same transaction, with a `USER_CREATED` entry that points back at the decision. PostgreSQL enforces this as well. Only auditor access can be requested, a decision must be journaled by an administrator and is final, roles never change, and at commit every new user needs a matching `USER_CREATED` entry, staff only from another administrator. The proof replays it: every user's role must match its signed creation.
+
+**Administrators, and the main administrator.** Several administrators share the daily work, so a held payment or an auditor request never waits for one person who is away. Who *is* an administrator is a different kind of decision, because that is how an insider would build a backdoor. So the first administrator is the **main administrator**: the only one who creates administrators or removes or restores an administrator's access, and nobody, the main administrator included, can remove them. Removing access never deletes anything: sessions end at once and the history stays under the person's name. PostgreSQL enforces all of it (`LL013`–`LL016`). When `migrate` upgrades an existing database, it records the switch as a signed `MAIN_ADMIN` entry, and the proof judges each administrator by the rule in force when it was created, so older history is not reported as a fault.
+
+**Personal details.** Every user keeps the basic details a bank needs (date of birth, mobile, email, address, occupation, an optional nominee; no ID numbers). Only the person changes them, and each change is a new version that waits to be checked. Any administrator except that person verifies the exact version they saw, or sends it back with a note; the row is locked, so two administrators cannot both decide. The person and administrators see the details; auditors only see whether they are verified. The details are deliberately kept out of the journal: a permanent, signed record is the wrong place for data that must stay correctable, so the journal holds who changed or checked which version, never a value. PostgreSQL enforces all of it (`LL017`), and a proof check replays the record against the stored details.
 
 **Double entry rather than single entry.** With external money as a real account (`SYS-EXTERNAL`) and held money as another (`SYS-SUSPENSE`), "money is conserved" becomes one simple, checkable statement: every entry sums to zero. Holds, reversals and approvals need no special cases; they are just more balanced entries.
 
@@ -41,12 +47,14 @@ A test enforces the architecture: the `app/sentinel` package cannot import the e
 
 ## How we used AI to build it, and where it was wrong
 
-We built LedgerLine with an AI coding assistant and treated its output as a pull request from a confident junior engineer. Every claim about locking or idempotency was checked by a test that forces the race, and every test was checked by mutation. PROMPTS.md has the specific misses: replayed responses that were equal but not byte-identical (JSONB reorders keys), a login throttle that trusted a client-controlled header, dependency pins from memory, a test that encoded a rule the code never had, and two UI defects found only by screenshot.
+We built LedgerLine with an AI coding assistant and treated its output as a pull request from a confident junior engineer. Every claim about locking or idempotency was checked by a test that forces the race, and every test was checked by mutation. PROMPTS.md has the specific misses: replayed responses that were equal but not byte-identical (JSONB reorders keys), a login throttle that trusted a client-controlled header, dependency pins from memory, a test that encoded a rule the code never had, UI defects found only by screenshot, a schema change that would have broken every existing install, a mutation that kept testing a function a migration had replaced, and a proof check that judged old history by a rule that did not exist yet.
 
 ## What we deliberately did not build
 
 * **Multiple currencies.** Each currency needs its own conservation equation plus FX accounts. INR only, enforced by a CHECK.
-* **Dual control (4-eyes) on reversals and approvals.** Single admin plus a journal entry plus auditor flags. The first thing we would add (THREATS A1).
+* **Dual control (4-eyes) on reversals and approvals.** One administrator plus a journal entry plus auditor flags. The first thing we would add (THREATS A1).
+* **Handing over the main administrator role, or a password change.** Not in the app (A13). Today a lost or stolen main-administrator password needs the server operator.
+* **Document checks for personal details.** No uploads, no OTP to the mobile number, no address registry; an administrator verifies against documents seen outside the app (A14). No ID numbers either, on purpose.
 * **Scheduled and batch transfers.** A batch is many transfers. We would add it as one atomic entry with N+1 postings and one key, but not before the core was proven.
 * **Natural-language queries over the ledger.** Letting a model write SQL against the journal is an injection vector. If ever, only via a validated filter schema.
 * **A trained ML fraud model.** A reviewer must see why something was held, and an unexplainable score cannot be audited.
@@ -58,4 +66,8 @@ We built LedgerLine with an AI coding assistant and treated its output as a pull
 * Someone holding both the database and the signing key can rewrite history consistently. We publish the chain head and give signed receipts as anchors, but do not push the head to an external timestamp service (A2/A3).
 * Login throttling is in memory per process (A4). There is no rate limit on money endpoints (A5).
 * No signing-key rotation procedure (A9). Held payments never auto-expire (A7).
+* An auditor request does not prove who is asking. The administrator has to confirm the person some other way (A12). We guarantee only that an administrator says yes, once, on the record.
+* Nobody can remove the main administrator, so a stolen main-administrator password cannot be locked out from inside the app (A13).
+* Personal details are stored in plain text, every administrator can read everyone's, and reading them is not recorded (A15). They can be corrected but not erased (A16).
+* Upgrading an existing database (`migrate`) was checked by hand against databases built by the previous release, not by the automated suite, which always starts from a fresh database.
 * Throughput is bounded by the single chain head. We expect hundreds of entries per second, which we judged right for corporate payroll and vendor payments (A8).

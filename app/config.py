@@ -48,6 +48,8 @@ class Settings:
     ai_timeout_seconds: float = 12.0
     login_max_failures: int = 10
     login_window_seconds: int = 300
+    signup_max: int = 10
+    signup_window_seconds: int = 600
     trust_proxy: bool = False
     extra: dict = field(default_factory=dict)
 
@@ -75,6 +77,8 @@ def get_settings() -> Settings:
         ai_model=os.environ.get("AI_MODEL", "claude-haiku-5-5").strip(),
         ai_timeout_seconds=float(os.environ.get("AI_TIMEOUT_SECONDS", "12")),
         trust_proxy=_bool("TRUST_PROXY", os.environ.get("APP_ENV", "").strip().lower() == "production"),
+        signup_max=int(os.environ.get("SIGNUP_MAX", "10")),
+        signup_window_seconds=int(os.environ.get("SIGNUP_WINDOW_SECONDS", "600")),
     )
     if settings.is_production:
         if settings.secret_key == DEFAULT_SECRET or len(settings.secret_key) < 32:

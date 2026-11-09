@@ -9,8 +9,8 @@ You need a PostgreSQL database (14 or newer; 16 recommended) and somewhere to ru
    * `ledgerline-db`, a free PostgreSQL 16 database;
    * `ledgerline`, a Python web service, with `DATABASE_URL` wired to the database and `SECRET_KEY` and `LEDGER_SIGNING_KEY` generated randomly.
 3. Optional: in the web service's **Environment** tab, set `ANTHROPIC_API_KEY` to enable LLM review notes. Without it, notes use the built-in template.
-4. Wait for the first deploy. The start command runs `migrate` (creates the schema and the signed GENESIS entry), then `seed --if-empty` (demo users and accounts), then starts two uvicorn workers.
-5. Open `https://<service>.onrender.com`, sign in as one of the demo people, and put that URL in the README.
+4. Wait for the first deploy. The start command runs `migrate` (creates the schema and the signed GENESIS entry; on later deploys it upgrades the existing database in place), then `seed --if-empty` (demo users, accounts and one waiting auditor request), then starts two uvicorn workers. The server refuses to start on a database older than its code.
+5. Open `https://<service>.onrender.com`, sign in with one of the demo accounts listed in the README (or create a user), and put that URL in the README.
 6. Check the live system: `python tools/attack.py --url https://<service>.onrender.com`
 
 Notes:
@@ -52,6 +52,7 @@ Create a free database on [neon.tech](https://neon.tech) and copy the **direct**
 | `ACCESS_TOKEN_MINUTES` | no | Default 60 |
 | `LOCK_TIMEOUT_MS` | no | Default 5000 (how long a request waits for a busy row or key) |
 | `TRUST_PROXY` | no | Override proxy trust (`1`/`0`) |
+| `SIGNUP_MAX` / `SIGNUP_WINDOW_SECONDS` | no | Public sign-up limit per address (default 10 per 600 s) |
 
 ## Operating it
 

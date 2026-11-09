@@ -6,8 +6,10 @@
 
 It opens two fresh sandbox accounts for the holder (so demo balances are not
 drained), then fires concurrent overdraws, replay storms, key reuse, theft,
-minting, malformed amounts, forged tokens, edit attempts and deadlock bait,
-and finally asks the auditor's proof whether the books still balance.
+minting, malformed amounts, forged tokens, edit attempts, deadlock bait,
+sign-ups that try to become staff, an administrator who tries to take over
+from the main administrator, people reaching for someone else's personal
+details, and finally asks the auditor's proof whether the books still balance.
 Exit code 0 = every attack was stopped.
 """
 
@@ -159,9 +161,91 @@ def main() -> int:
     record("20 opposite transfers A<->B at once (deadlock bait)", all(r.status_code < 500 for r in rs),
            f"statuses {sorted({r.status_code for r in rs})}")
 
-    # 11. Pay a system account directly.
+    # 11. Public sign-up: become an admin, or get free money.
+    name = f"intruder{uuid.uuid4().hex[:8]}"
+    newcomer = name                                    # used again in attack 15
+    r1 = httpx.post(f"{args.url}/api/auth/register", timeout=60,
+                    json={"username": name, "display_name": "Intruder", "password": "intruder-pass-123", "role": "admin"})
+    r2 = httpx.post(f"{args.url}/api/auth/register", timeout=60,
+                    json={"username": name, "display_name": "Intruder", "password": "intruder-pass-123"})
+    ok = r1.status_code == 422 and r2.status_code == 201 and r2.json()["user"]["role"] == "holder" \
+        and r2.json()["account"]["balance"]["paise"] == 0
+    record("sign up as admin / sign up for free money", ok,
+           f"role=admin -> {r1.status_code}; plain sign-up -> {r2.status_code} "
+           f"{r2.json()['user']['role'] if r2.status_code == 201 else ''} with Rs "
+           f"{r2.json()['account']['balance']['rupees'] if r2.status_code == 201 else '?'}")
+
+    # 12. Ask for auditor access, then try to use it before any administrator agrees.
+    name, secret = f"spy{uuid.uuid4().hex[:8]}", "would-be-auditor-123"
+    r1 = httpx.post(f"{args.url}/api/auth/register", timeout=60,
+                    json={"username": name, "display_name": "Would-be auditor", "password": secret, "role": "auditor"})
+    req = r1.json().get("request", {}).get("id") if r1.status_code == 202 else None
+
+    def sign_in_code() -> str:
+        r = httpx.post(f"{args.url}/api/auth/login", timeout=60, json={"username": name, "password": secret})
+        return f"{r.status_code} {r.json().get('error', {}).get('code', 'TOKEN ISSUED')}"
+
+    before = sign_in_code()
+    by_holder = holder.post(f"/api/access-requests/{req}/approve", {}, key=None).status_code if req else 0
+    by_auditor = auditor.post(f"/api/access-requests/{req}/approve", {}, key=None).status_code if req else 0
+    # Tidy up as the real administrator would: decline it. It still cannot sign in.
+    declined = admin.post(f"/api/access-requests/{req}/decline", {"note": "attack.py test request"},
+                          key=None).status_code if req else 0
+    after = sign_in_code()
+    ok = (r1.status_code == 202 and "access_token" not in r1.json() and before == "403 APPROVAL_PENDING"
+          and by_holder == 403 and by_auditor == 403 and declined == 200 and after == "403 ACCESS_DECLINED")
+    record("sign up as auditor and use it before an admin approves", ok,
+           f"request -> {r1.status_code}; sign in -> {before}; holder/auditor approve -> {by_holder}/{by_auditor}; "
+           f"after decline -> {after}")
+
+    # 13. Pay a system account directly.
     r = holder.post("/api/transfers", {"from_account": b, "to_account": "SYS-SUSPENSE", "amount": "1"})
     record("send money straight into a system account", r.status_code == 422, f"{r.status_code}")
+
+    # 14. An administrator who is not the main one tries to take over: make more
+    #     administrators, or lock the main administrator out.
+    def code(r: httpx.Response) -> str:
+        return f"{r.status_code} {r.json().get('error', {}).get('code', '')}".strip()
+
+    name, secret = f"insider{uuid.uuid4().hex[:8]}", "insider-admin-pass-123"
+    made = admin.post("/api/users", {"username": name, "display_name": "Insider Admin", "role": "admin",
+                                      "password": secret}, key=None)
+    if made.status_code == 201:
+        insider = Client(args.url, name, secret)
+        more = insider.post("/api/users", {"username": f"{name}x", "display_name": "Another Admin", "role": "admin",
+                                            "password": secret}, key=None)
+        lockout = insider.post(f"/api/users/{admin.user}/deactivate", {}, key=None)
+        own = admin.post(f"/api/users/{admin.user}/deactivate", {}, key=None)      # not even by mistake
+        # The main administrator removes the insider's access: it ends at once.
+        removed = admin.post(f"/api/users/{name}/deactivate", {}, key=None)
+        session = insider.get("/api/me")
+        ok = (code(more) == "403 MAIN_ADMIN_ONLY" and code(lockout) == "403 MAIN_ADMIN_PROTECTED"
+              and code(own) == "403 MAIN_ADMIN_PROTECTED" and removed.status_code == 200
+              and code(session) == "401 SESSION_REVOKED" and admin.get("/api/me").status_code == 200)
+        detail = (f"create an admin -> {code(more)}; remove the main admin -> {code(lockout)} "
+                  f"(main admin itself -> {code(own)}); main admin removes the insider -> {removed.status_code}, "
+                  f"insider's session -> {code(session)}")
+    else:
+        ok, detail = False, f"could not set up: creating an administrator as {admin.user} -> {code(made)} " \
+                            "(run with the main administrator's credentials)"
+    record("a second admin creates admins or removes the main admin", ok, detail)
+
+    # 15. Personal details: read someone else's, check your own, or find them in
+    #     the permanent record. (The newcomer from attack 11 saves made-up details.)
+    person = Client(args.url, newcomer, "intruder-pass-123")
+    mine = {"date_of_birth": "1991-03-14", "mobile": f"9{uuid.uuid4().int % 10**9:09d}", "email": f"{newcomer}@example.com",
+            "address_line1": f"Door {uuid.uuid4().hex[:6]}, Attack Street", "city": "Guntur", "state": "Andhra Pradesh",
+            "pin_code": "522002", "occupation": "other"}
+    saved = httpx.put(f"{args.url}/api/me/details", headers=person.headers, json=mine, timeout=60).status_code
+    by_holder = holder.get(f"/api/users/{newcomer}/details").status_code
+    by_auditor = auditor.get(f"/api/users/{newcomer}/details").status_code
+    own_check = person.post(f"/api/users/{newcomer}/details/verify", {"version": 1}, key=None).status_code
+    record_text = auditor.get("/api/audit/journal?kind=DETAILS_SUBMITTED&limit=200").text
+    leaked = [field for field in ("mobile", "email", "address_line1") if mine[field] in record_text]
+    ok = saved == 200 and (by_holder, by_auditor, own_check) == (403, 403, 403) and not leaked
+    record("read someone's personal details, check your own, find them in the journal", ok,
+           f"save own -> {saved}; holder reads -> {by_holder}; auditor reads -> {by_auditor}; "
+           f"verify own -> {own_check}; values in the journal: {leaked or 'none'}")
 
     end = auditor.get("/api/audit/proof").json()
     failing = [c["title"] for c in end["checks"] if not c["ok"]]
