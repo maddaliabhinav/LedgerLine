@@ -44,6 +44,7 @@ ENGINE = "app/ledger/engine.py"
 SCHEMA = "app/schema.sql"
 ADMIN_OPS = "app/ledger/admin_ops.py"
 ACCESS_SQL = "app/migrations/002_access_requests.sql"
+MAIN_SQL = "app/migrations/003_main_admin.sql"
 BALANCE_CHECK = 'if amount > accounts.available(source):                    # THE balance check'
 OWNER_CHECK = 'if source["owner_id"] != actor.id:'
 DAILY_CHECK = 'if _daily_outgoing(cur, source["id"]) + amount > source["daily_limit"]:'
@@ -116,8 +117,9 @@ MUTATIONS = [
              'if user is None or not user["is_active"] or user["token_version"] != claims["tv"]:',
              "if user is None:"),
     Mutation("M28", "Trust the role written inside the token", "app/api/deps.py",
-             'return CurrentUser(user["id"], user["username"], user["display_name"], user["role"])',
-             'return CurrentUser(user["id"], user["username"], user["display_name"], claims.get("role", user["role"]))'),
+             'return CurrentUser(user["id"], user["username"], user["display_name"], user["role"], user["is_main_admin"])',
+             'return CurrentUser(user["id"], user["username"], user["display_name"], claims.get("role", user["role"]),'
+             ' user["is_main_admin"])'),
     Mutation("M29", "Let holders read any statement", "app/api/routes_accounts.py",
              'if user.role == "holder" and acct["owner_id"] != user.id:', "if False:"),
     Mutation("M30", "Accept negative integer amounts", "app/money.py", "if value < 0:", "if False:"),
@@ -154,7 +156,8 @@ MUTATIONS = [
              "AND decider.role = 'admin') THEN", ") THEN"),
     Mutation("M44", "Database lets a decided request be decided again (LL012)", ACCESS_SQL,
              "IF OLD.status <> 'pending' THEN", "IF FALSE THEN"),
-    Mutation("M45", "Make user roles editable (LL013)", ACCESS_SQL,
+    # users_guard is redefined by migration 003, so the live copy is the one to break.
+    Mutation("M45", "Make user roles editable (LL013)", MAIN_SQL,
              "IF NEW.role <> OLD.role THEN", "IF FALSE THEN"),
     Mutation("M46", "Drop the users-on-the-record check at commit (LL014)", ACCESS_SQL,
              "CREATE CONSTRAINT TRIGGER users_created_on_record AFTER INSERT ON users\n"
@@ -162,6 +165,32 @@ MUTATIONS = [
              "    FOR EACH ROW EXECUTE FUNCTION users_created_on_record();\n", ""),
     Mutation("M47", "Proof stops comparing roles with the record", "app/ledger/proof.py",
              'if entry["details"].get("role") != user["role"]:', "if False:"),
+    # --- the main administrator: decides who is an administrator, and cannot be removed ----
+    Mutation("M48", "Let any administrator create administrators", ADMIN_OPS,
+             "if not creator_is_main:", "if False:"),
+    Mutation("M49", "Let any administrator remove or restore administrators", ADMIN_OPS,
+             'if user["role"] == "admin" and not actor_is_main:', "if False:"),
+    Mutation("M50", "Let the main administrator's access be removed (app check)", ADMIN_OPS,
+             'if user["is_main_admin"] and not active:', "if False:"),
+    Mutation("M51", "Database lets the main administrator be removed (LL015)", MAIN_SQL,
+             "IF OLD.is_main_admin AND NOT NEW.is_active THEN", "IF FALSE THEN"),
+    Mutation("M52", "Database allows two main administrators", MAIN_SQL,
+             "CREATE UNIQUE INDEX users_one_main_admin ON users ((true)) WHERE is_main_admin;\n", ""),
+    Mutation("M53", "Database lets any administrator create administrators (LL014)", MAIN_SQL,
+             "OR (creator.is_main_admin AND creator.id <> NEW.id AND NOT NEW.is_main_admin)",
+             "OR (creator.role = 'admin' AND creator.id <> NEW.id AND NOT NEW.is_main_admin)"),
+    Mutation("M54", "Database lets any administrator change an administrator's access (LL016)", MAIN_SQL,
+             "AND decider.is_main_admin AND decider.id <> NEW.id) THEN", "AND decider.id <> NEW.id) THEN"),
+    Mutation("M55", "Proof stops checking who created administrators", "app/ledger/proof.py",
+             'if entry["actor_id"] != main_id or entry["actor_id"] == user_id:', "if False:"),
+    Mutation("M56", "Database lets the main-administrator flag move (LL013)", MAIN_SQL,
+             "IF NEW.is_main_admin <> OLD.is_main_admin THEN", "IF FALSE THEN"),
+    Mutation("M57", "Proof judges every administrator by the old rule", "app/ledger/proof.py",
+             'if rule_from is None or entry["seq"] <= rule_from:', "if True:"),
+    Mutation("M58", "Proof trusts the main-administrator flag over the signed record", "app/ledger/proof.py",
+             "if marked != ([main_id] if main_id is not None else []):", "if False:"),
+    Mutation("M59", "Database allows a second switch to the main-administrator rule", MAIN_SQL,
+             "CREATE UNIQUE INDEX journal_one_main_admin_switch ON journal ((true)) WHERE kind = 'MAIN_ADMIN';\n", ""),
 ]
 
 

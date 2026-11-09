@@ -7,8 +7,9 @@
 It opens two fresh sandbox accounts for the holder (so demo balances are not
 drained), then fires concurrent overdraws, replay storms, key reuse, theft,
 minting, malformed amounts, forged tokens, edit attempts, deadlock bait,
-sign-ups that try to become staff, and finally asks the auditor's proof
-whether the books still balance.
+sign-ups that try to become staff, an administrator who tries to take over
+from the main administrator, and finally asks the auditor's proof whether
+the books still balance.
 Exit code 0 = every attack was stopped.
 """
 
@@ -199,6 +200,34 @@ def main() -> int:
     # 13. Pay a system account directly.
     r = holder.post("/api/transfers", {"from_account": b, "to_account": "SYS-SUSPENSE", "amount": "1"})
     record("send money straight into a system account", r.status_code == 422, f"{r.status_code}")
+
+    # 14. An administrator who is not the main one tries to take over: make more
+    #     administrators, or lock the main administrator out.
+    def code(r: httpx.Response) -> str:
+        return f"{r.status_code} {r.json().get('error', {}).get('code', '')}".strip()
+
+    name, secret = f"insider{uuid.uuid4().hex[:8]}", "insider-admin-pass-123"
+    made = admin.post("/api/users", {"username": name, "display_name": "Insider Admin", "role": "admin",
+                                      "password": secret}, key=None)
+    if made.status_code == 201:
+        insider = Client(args.url, name, secret)
+        more = insider.post("/api/users", {"username": f"{name}x", "display_name": "Another Admin", "role": "admin",
+                                            "password": secret}, key=None)
+        lockout = insider.post(f"/api/users/{admin.user}/deactivate", {}, key=None)
+        own = admin.post(f"/api/users/{admin.user}/deactivate", {}, key=None)      # not even by mistake
+        # The main administrator removes the insider's access: it ends at once.
+        removed = admin.post(f"/api/users/{name}/deactivate", {}, key=None)
+        session = insider.get("/api/me")
+        ok = (code(more) == "403 MAIN_ADMIN_ONLY" and code(lockout) == "403 MAIN_ADMIN_PROTECTED"
+              and code(own) == "403 MAIN_ADMIN_PROTECTED" and removed.status_code == 200
+              and code(session) == "401 SESSION_REVOKED" and admin.get("/api/me").status_code == 200)
+        detail = (f"create an admin -> {code(more)}; remove the main admin -> {code(lockout)} "
+                  f"(main admin itself -> {code(own)}); main admin removes the insider -> {removed.status_code}, "
+                  f"insider's session -> {code(session)}")
+    else:
+        ok, detail = False, f"could not set up: creating an administrator as {admin.user} -> {code(made)} " \
+                            "(run with the main administrator's credentials)"
+    record("a second admin creates admins or removes the main admin", ok, detail)
 
     end = auditor.get("/api/audit/proof").json()
     failing = [c["title"] for c in end["checks"] if not c["ok"]]
