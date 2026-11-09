@@ -33,6 +33,7 @@ def _migrations() -> list[tuple[int, Path]]:
 
 
 SCHEMA_VERSION = max([1] + [version for version, _ in _migrations()])
+MAIN_ADMIN_SINCE = 3            # the schema version that introduced the main administrator
 
 DEMO_USERS = [
     # username, display name, role, password
@@ -62,7 +63,13 @@ def migrate() -> None:
                     for _, path in pending:
                         conn.execute(path.read_text(encoding="utf-8"))
                     conn.execute("SET search_path TO ledgerline, public")
+                    switch = None
+                    if version < MAIN_ADMIN_SINCE <= pending[-1][0]:
+                        switch = _record_main_admin(conn.cursor())
                 print(f"schema upgraded from version {version} to {pending[-1][0]}")
+                if switch:
+                    print(f"main administrator: {switch['details']['username'] or 'none (no active administrator)'}"
+                          f" - signed entry #{switch['seq']}")
                 return
             with conn.transaction():
                 conn.execute(SCHEMA_FILE.read_text(encoding="utf-8"))
@@ -85,6 +92,22 @@ def migrate() -> None:
             print(f"schema version {SCHEMA_VERSION} created; ledger key {get_signer().key_id}")
         finally:
             conn.execute("SELECT pg_advisory_unlock(%s)", (MIGRATION_LOCK,))
+
+
+def _record_main_admin(cur) -> dict:
+    """Upgrading across version 3 puts the switch on the signed record: who became
+    the main administrator, and the entry from which only they manage
+    administrators. Administrators created earlier were made under the earlier
+    rule, and the proof judges them by it."""
+    cur.execute("SELECT id, username FROM users WHERE is_main_admin")
+    main = cur.fetchone()
+    return append_entry(cur, kind="MAIN_ADMIN", status="info", details={
+        "user_id": main["id"] if main else None,
+        "username": main["username"] if main else None,
+        "schema_version": MAIN_ADMIN_SINCE,
+        "rule": "from this entry on, only the main administrator creates administrators or changes their access, "
+                "and nobody can remove the main administrator",
+    })
 
 
 def _user_id(username: str) -> int:
