@@ -208,9 +208,9 @@ function scoreDial(score, threshold) {
 
 /* ------------------------------------------------------------------ shell & router */
 const NAV = {
-  holder: [["#/accounts", "Accounts"], ["#/move", "Move money"], ["#/race", "Race lab"]],
+  holder: [["#/accounts", "Accounts"], ["#/move", "Move money"], ["#/race", "Race lab"], ["#/details", "My details"]],
   admin: [["#/overview", "Overview"], ["#/reviews", "Reviews"], ["#/all-accounts", "Accounts"], ["#/users", "Users"], ["#/journal", "Journal"], ["#/proof", "Proof"], ["#/flags", "Flags"]],
-  auditor: [["#/overview", "Overview"], ["#/proof", "Proof"], ["#/journal", "Journal"], ["#/flags", "Flags"], ["#/duplicates", "Duplicates"], ["#/reviews", "Reviews"], ["#/all-accounts", "Accounts"]],
+  auditor: [["#/overview", "Overview"], ["#/proof", "Proof"], ["#/journal", "Journal"], ["#/flags", "Flags"], ["#/duplicates", "Duplicates"], ["#/reviews", "Reviews"], ["#/all-accounts", "Accounts"], ["#/users", "Users"]],
 };
 const HOME = { holder: "#/accounts", admin: "#/overview", auditor: "#/overview" };
 
@@ -227,6 +227,7 @@ const ROUTES = {
   proof: { roles: ["admin", "auditor"], render: pageProof },
   flags: { roles: ["admin", "auditor"], render: pageFlags },
   duplicates: { roles: ["admin", "auditor"], render: pageDuplicates },
+  details: { roles: ["holder", "admin", "auditor"], render: pageMyDetails },
 };
 
 function renderShell(active) {
@@ -240,7 +241,8 @@ function renderShell(active) {
       NAV[state.user.role].map(([href, label]) => h("a", { href, "aria-current": href === "#/" + active ? "page" : null }, label))),
     h("div", { class: "who" },
       sealBtn,
-      h("div", {}, h("div", {}, state.user.name), h("div", { class: "role" }, state.user.main_admin ? "main admin" : state.user.role)),
+      h("a", { class: "who-name", href: "#/details", title: "My details" },
+        h("div", {}, state.user.name), h("div", { class: "role" }, state.user.main_admin ? "main admin" : state.user.role)),
       h("button", { class: "btn secondary small", onclick: () => logout() }, "Sign out"))));
   api("GET", "/api/health", undefined, { anonymous: true }).then((r) => {
     if (r.ok) set(sealBtn, seal(r.data.ledger_head.hash, r.data.ledger_head.seq));
@@ -431,7 +433,9 @@ async function myAccounts() {
 
 async function pageAccounts(main) {
   const wrap = page(main, "Your accounts", "Balances are read straight from the ledger.");
-  const list = await myAccounts();
+  const [list, mine] = await Promise.all([myAccounts(), api("GET", "/api/me/details")]);
+  const reminder = mine.ok ? DETAILS_REMINDER[mine.data.status] : null;
+  if (reminder) wrap.append(h("p", { class: "auth-notice" }, reminder, " ", h("a", { href: "#/details" }, "Open my details")));
   if (!list.length) { wrap.append(h("p", { class: "empty" }, "You have no accounts yet. An administrator opens accounts for you.")); return; }
   wrap.append(h("div", { class: "accounts" }, list.map((a) =>
     h("article", { class: "acct" + (a.status !== "active" ? " frozen" : "") },
@@ -883,6 +887,7 @@ async function pageUsers(main) {
   if (!r.ok) { wrap.append(h("p", {}, errorText(r))); return; }
   wrap.append(accessRequests(waiting.ok ? waiting.data.requests : [], decided.ok ? decided.data.requests : [], isAdmin),
     h("div", { class: "page-head" }));
+  if (isAdmin) wrap.append(detailsQueue(r.data.users.filter((p) => p.details === "waiting")), h("div", { class: "page-head" }));
   if (isAdmin) {
     const u = h("input", { id: "n-user", placeholder: "username" });
     const n = h("input", { id: "n-name", placeholder: "Full name" });
@@ -911,9 +916,146 @@ async function pageUsers(main) {
       h("td", {}, p.role, p.main_admin ? h("span", { class: "mark info role-tag" }, "main admin") : null),
       h("td", { class: "num" }, String(p.accounts)),
       h("td", {}, p.active ? h("span", { class: "mark ok" }, "active") : h("span", { class: "mark bad" }, "access removed")),
+      h("td", {}, detailsMark(p.details),
+        isAdmin && p.details !== "none" ? h("button", { class: "btn link small details-view", onclick: () => openDetails(p.username) }, "View") : null),
       h("td", {}, isAdmin ? accessAction(p, isMain) : null)));
   }
-  wrap.append(h("div", { class: "table-wrap" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, "Username"), h("th", {}, "Name"), h("th", {}, "Role"), h("th", {}, "Accounts"), h("th", {}, "Status"), h("th", {}, ""))), body)));
+  wrap.append(h("div", { class: "table-wrap" }, h("table", {}, h("thead", {}, h("tr", {}, ["Username", "Name", "Role", "Accounts", "Status", "Personal details", ""].map((x) => h("th", {}, x)))), body)));
+  if (!isAdmin) wrap.append(h("p", { class: "small muted" }, "Personal details are shown only to the person and to administrators. Auditors see whether they are verified."));
+}
+
+/* ------------------------------------------------------------------ personal details */
+const DETAILS_STATUS = {
+  none: ["info", "not given"], waiting: ["held", "waiting"], verified: ["ok", "verified"], returned: ["bad", "sent back"],
+};
+const DETAILS_REMINDER = {
+  none: "Add your personal details (date of birth, mobile, email, address). An administrator checks them, as a bank would.",
+  returned: "An administrator asked you to correct your personal details.",
+};
+const DETAILS_LABELS = [["date_of_birth", "Date of birth"], ["mobile", "Mobile"], ["email", "Email"],
+  ["address_line1", "Address line 1"], ["address_line2", "Address line 2"], ["city", "City"], ["state", "State"],
+  ["pin_code", "PIN code"], ["occupation", "Occupation"], ["nominee_name", "Nominee"], ["nominee_relation", "Nominee's relation"]];
+const OCCUPATION_LABEL = { salaried: "Salaried", self_employed: "Self-employed", business: "Business owner", student: "Student", homemaker: "Homemaker", retired: "Retired", other: "Other" };
+const RELATION_LABEL = { spouse: "Spouse", father: "Father", mother: "Mother", son: "Son", daughter: "Daughter", brother: "Brother", sister: "Sister", other: "Other" };
+
+function detailsMark(status) {
+  const [cls, text] = DETAILS_STATUS[status] || DETAILS_STATUS.none;
+  return h("span", { class: "mark " + cls }, text);
+}
+function detailValue(key, value) {
+  if (value === null || value === undefined || value === "") return "—";
+  if (key === "occupation") return OCCUPATION_LABEL[value] || value;
+  if (key === "nominee_relation") return RELATION_LABEL[value] || value;
+  if (key === "date_of_birth") return new Date(value + "T00:00:00").toLocaleDateString("en-IN", { dateStyle: "long" });
+  return value;
+}
+function detailsStatusLine(v, own) {
+  if (v.status === "none") return own ? "You have not given your personal details yet." : "No personal details given yet.";
+  if (v.status === "waiting") return `Version ${v.version}, saved ${when(v.submitted_at)}, is waiting for an administrator to check it.`;
+  if (v.status === "verified") return `Version ${v.version} was verified by ${v.decided_by.name} on ${when(v.decided_at)}.`;
+  return `${v.decided_by.name} sent version ${v.version} back on ${when(v.decided_at)}: “${v.return_note}”`;
+}
+
+async function pageMyDetails(main) {
+  const wrap = page(main, "My details", "The basic details a bank keeps about you. No ID numbers.");
+  const r = await api("GET", "/api/me/details");
+  if (!r.ok) { wrap.append(h("p", {}, errorText(r))); return; }
+  const v = r.data, c = v.choices, d = v.details || {};
+  const status = h("section", { class: "panel details-status" },
+    h("div", { class: "spread" }, h("h2", {}, "Status"), detailsMark(v.status)),
+    h("p", {}, detailsStatusLine(v, true)));
+  const input = (name, attrs = {}) => h("input", { id: `d-${name}`, name, value: d[name] || "", ...attrs });
+  const select = (name, options, blank) => h("select", { id: `d-${name}`, name },
+    blank ? h("option", { value: "" }, blank) : null,
+    options.map((o) => h("option", { value: o.value, selected: d[name] === o.value }, o.label)));
+  const fields = {
+    date_of_birth: input("date_of_birth", { type: "date", required: true }),
+    mobile: input("mobile", { type: "tel", inputmode: "numeric", autocomplete: "tel", placeholder: "10 digits, e.g. 98765 43210", required: true }),
+    email: input("email", { type: "email", autocomplete: "email", placeholder: "name@example.com", required: true }),
+    address_line1: input("address_line1", { autocomplete: "address-line1", maxlength: 120, placeholder: "House / flat, street", required: true }),
+    address_line2: input("address_line2", { autocomplete: "address-line2", maxlength: 120, placeholder: "Area, landmark (optional)" }),
+    city: input("city", { autocomplete: "address-level2", maxlength: 60, required: true }),
+    state: select("state", c.states.map((x) => ({ value: x, label: x })), "Choose a state"),
+    pin_code: input("pin_code", { inputmode: "numeric", autocomplete: "postal-code", maxlength: 6, placeholder: "6 digits", required: true }),
+    occupation: select("occupation", c.occupations, "Choose one"),
+    nominee_name: input("nominee_name", { maxlength: 80, placeholder: "Optional" }),
+    nominee_relation: select("nominee_relation", c.relations, "—"),
+  };
+  const errors = {};
+  const field = (name, label) => {
+    errors[name] = h("p", { class: "field-error", role: "alert" });
+    return h("div", { class: "field" }, h("label", { for: `d-${name}` }, label), fields[name], errors[name]);
+  };
+  const formError = h("p", { class: "form-error", role: "alert" });
+  const form = h("form", { class: "panel", novalidate: true, onsubmit: async (e) => {
+    e.preventDefault();
+    Object.values(errors).forEach((x) => set(x)); set(formError);
+    const body = Object.fromEntries(Object.entries(fields).map(([k, el]) => [k, el.value.trim() === "" ? null : el.value.trim()]));
+    const res = await api("PUT", "/api/me/details", body);
+    if (!res.ok) {
+      const list = (res.data && res.data.error && res.data.error.fields) || [];
+      list.forEach((f) => { if (errors[f.field]) set(errors[f.field], f.message); });
+      if (!list.some((f) => errors[f.field])) set(formError, errorText(res));
+      return;
+    }
+    toast(res.data.version === v.version ? "Nothing changed." : `Saved. Version ${res.data.version} is waiting for an administrator to check it.`);
+    route();
+  } },
+    h("h2", {}, v.status === "none" ? "Add your details" : "Your details"),
+    h("div", { class: "grid-2" }, field("date_of_birth", "Date of birth"), field("mobile", "Mobile number"),
+      field("email", "Email"), field("occupation", "Occupation")),
+    h("h3", {}, "Address"),
+    h("div", { class: "grid-2" }, field("address_line1", "Address line 1"), field("address_line2", "Address line 2"),
+      field("city", "City"), field("state", "State or union territory"), field("pin_code", "PIN code")),
+    h("h3", {}, "Nominee (optional)"),
+    h("div", { class: "grid-2" }, field("nominee_name", "Nominee's name"), field("nominee_relation", "Relation to you")),
+    formError,
+    h("p", { class: "muted form-note" }, "Only you can change these. Any change goes back to an administrator to check. Your details are shown only to you and to administrators, and they are never written into the permanent journal: it records only that they changed, and who checked them."),
+    h("button", { class: "btn", type: "submit" }, v.status === "none" ? "Save and send for checking" : "Save changes"));
+  wrap.append(status, h("div", { class: "page-head" }), form);
+}
+
+function detailsQueue(waiting) {
+  return h("section", { class: "panel" },
+    h("div", { class: "spread" }, h("h2", {}, "Personal details to check"),
+      waiting.length ? h("span", { class: "mark held" }, `${waiting.length} waiting`) : null),
+    h("p", { class: "muted small" }, "Check each person's details against their documents, then verify them or send them back with a note. Nobody checks their own details, and each decision is a signed journal entry."),
+    waiting.length ? h("div", { class: "requests" }, waiting.map((p) => h("div", { class: "request" },
+      h("div", { class: "spread" },
+        h("div", {}, h("strong", {}, p.name), h("div", { class: "small muted" }, `${p.username}, version ${p.details_version}`)),
+        p.username === state.user.username ? h("span", { class: "muted small-note" }, "your own: another admin checks it")
+          : h("button", { class: "btn small", onclick: () => openDetails(p.username) }, "Check details")))))
+      : h("p", { class: "empty-line" }, "No details waiting."));
+}
+
+async function openDetails(username) {
+  const root = $("#drawer-root");
+  const panel = h("aside", { class: "drawer", role: "dialog", "aria-modal": "true", "aria-label": `Personal details of ${username}` },
+    h("p", { class: "muted" }, "Loading…"));
+  set(root, h("div", { class: "scrim", onclick: closeDrawer }), panel);
+  const r = await api("GET", `/api/users/${encodeURIComponent(username)}/details`);
+  if (!r.ok) { set(panel, h("p", {}, errorText(r))); return; }
+  const v = r.data;
+  const own = v.username === state.user.username;
+  const note = h("input", { maxlength: 200, placeholder: "What needs correcting? (shown to them)", "aria-label": "Note for sending back" });
+  const decide = async (verb) => {
+    if (verb === "return" && !note.value.trim()) { toast("Write a note saying what needs correcting.", true); note.focus(); return; }
+    const res = await api("POST", `/api/users/${encodeURIComponent(username)}/details/${verb}`,
+      verb === "verify" ? { version: v.version } : { version: v.version, note: note.value.trim() });
+    toast(res.ok ? (verb === "verify" ? `Verified ${v.name}'s details (version ${v.version}).` : `Sent ${v.name}'s details back.`) : errorText(res), !res.ok);
+    if (res.ok) { closeDrawer(); route(); }
+  };
+  set(panel,
+    h("div", { class: "spread" }, h("h2", {}, v.name), h("button", { class: "btn secondary small", onclick: closeDrawer }, "Close")),
+    h("p", { class: "row" }, detailsMark(v.status), h("span", { class: "small muted" }, `${v.username}, version ${v.version}`)),
+    h("p", { class: "small" }, detailsStatusLine(v, false)),
+    v.details ? h("dl", { class: "kv" }, DETAILS_LABELS.map(([k, label]) => [h("dt", {}, label), h("dd", {}, detailValue(k, v.details[k]))])) : null,
+    v.status === "waiting" && !own ? h("div", { class: "details-actions" },
+      h("button", { class: "btn", onclick: () => decide("verify") }, `Verify version ${v.version}`),
+      h("div", { class: "row request-actions" }, note, h("button", { class: "btn danger small", onclick: () => decide("return") }, "Send back"))) : null,
+    own && v.status === "waiting" ? h("p", { class: "small muted" }, "These are your own details. Another administrator checks them.") : null,
+    h("p", { class: "small muted" }, "Personal details are never written into the journal. The journal records that they changed, and who verified or sent back which version."));
+  $("button", panel)?.focus();
 }
 
 // Who may remove or restore whose access. The server and the database enforce the
