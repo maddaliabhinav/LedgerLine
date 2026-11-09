@@ -240,7 +240,7 @@ function renderShell(active) {
       NAV[state.user.role].map(([href, label]) => h("a", { href, "aria-current": href === "#/" + active ? "page" : null }, label))),
     h("div", { class: "who" },
       sealBtn,
-      h("div", {}, h("div", {}, state.user.name), h("div", { class: "role" }, state.user.role)),
+      h("div", {}, h("div", {}, state.user.name), h("div", { class: "role" }, state.user.main_admin ? "main admin" : state.user.role)),
       h("button", { class: "btn secondary small", onclick: () => logout() }, "Sign out"))));
   api("GET", "/api/health", undefined, { anonymous: true }).then((r) => {
     if (r.ok) set(sealBtn, seal(r.data.ledger_head.hash, r.data.ledger_head.seq));
@@ -264,8 +264,16 @@ async function route() {
   }
   main.focus({ preventScroll: true });
 }
+async function start() {
+  if (state.token) {                       // the server, not the browser's saved copy, says who this is
+    const me = await api("GET", "/api/me");
+    if (me.status === 401) return;         // signOut() has already shown the sign-in page
+    if (me.ok) { state.user = me.data; store.set("user", state.user); }
+  }
+  route();
+}
 window.addEventListener("hashchange", route);
-window.addEventListener("DOMContentLoaded", route);
+window.addEventListener("DOMContentLoaded", start);
 
 function page(main, title, lede, ...actions) {
   const wrap = h("div", { class: "page" },
@@ -868,6 +876,7 @@ async function setOverdraft(acct) {
 
 async function pageUsers(main) {
   const isAdmin = state.user.role === "admin";
+  const isMain = isAdmin && Boolean(state.user.main_admin);
   const wrap = page(main, "People", "Who can sign in, and what they can do.");
   const [r, waiting, decided] = await Promise.all([api("GET", "/api/users"), api("GET", "/api/access-requests"),
     api("GET", "/api/access-requests?state=decided")]);
@@ -877,7 +886,8 @@ async function pageUsers(main) {
   if (isAdmin) {
     const u = h("input", { id: "n-user", placeholder: "username" });
     const n = h("input", { id: "n-name", placeholder: "Full name" });
-    const role = h("select", { id: "n-role" }, ["holder", "auditor", "admin"].map((x) => h("option", { value: x }, x)));
+    const roles = isMain ? ["holder", "auditor", "admin"] : ["holder", "auditor"];
+    const role = h("select", { id: "n-role" }, roles.map((x) => h("option", { value: x }, x)));
     const pw = h("input", { id: "n-pw", type: "password", autocomplete: "new-password", placeholder: "At least 10 characters" });
     wrap.append(h("form", { class: "panel", onsubmit: async (e) => {
       e.preventDefault();
@@ -890,19 +900,34 @@ async function pageUsers(main) {
         h("div", { class: "field" }, h("label", { for: "n-name" }, "Name"), n),
         h("div", { class: "field" }, h("label", { for: "n-role" }, "Role"), role),
         h("div", { class: "field" }, h("label", { for: "n-pw" }, "Password"), pw)),
+      h("p", { class: "muted form-note" }, isMain
+        ? "Administrators you create do the daily work: deposits, approvals, reviews and auditor requests. Only you can create administrators or remove their access."
+        : "Administrators are created by the main administrator."),
       h("button", { class: "btn", type: "submit" }, "Create user")), h("div", { class: "page-head" }));
   }
   const body = h("tbody");
   for (const p of r.data.users) {
-    body.append(h("tr", {}, h("td", {}, p.username), h("td", {}, p.name), h("td", {}, p.role), h("td", { class: "num" }, String(p.accounts)),
-      h("td", {}, p.active ? h("span", { class: "mark ok" }, "active") : h("span", { class: "mark bad" }, "deactivated")),
-      h("td", {}, isAdmin && p.username !== state.user.username ? h("button", { class: "btn secondary small", onclick: async () => {
-        const res = await api("POST", `/api/users/${p.username}/${p.active ? "deactivate" : "activate"}`);
-        toast(res.ok ? `${p.username} is now ${res.data.active ? "active" : "deactivated"}.` : errorText(res), !res.ok);
-        route();
-      } }, p.active ? "Deactivate" : "Activate") : null)));
+    body.append(h("tr", {}, h("td", {}, p.username), h("td", {}, p.name),
+      h("td", {}, p.role, p.main_admin ? h("span", { class: "mark info role-tag" }, "main admin") : null),
+      h("td", { class: "num" }, String(p.accounts)),
+      h("td", {}, p.active ? h("span", { class: "mark ok" }, "active") : h("span", { class: "mark bad" }, "access removed")),
+      h("td", {}, isAdmin ? accessAction(p, isMain) : null)));
   }
   wrap.append(h("div", { class: "table-wrap" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, "Username"), h("th", {}, "Name"), h("th", {}, "Role"), h("th", {}, "Accounts"), h("th", {}, "Status"), h("th", {}, ""))), body)));
+}
+
+// Who may remove or restore whose access. The server and the database enforce the
+// same rules; this only avoids offering buttons that would be refused.
+function accessAction(p, isMain) {
+  if (p.username === state.user.username) return null;                          // never yourself
+  if (p.main_admin) return h("span", { class: "muted small-note" }, "protected");   // nobody removes the main admin
+  if (p.role === "admin" && !isMain) return h("span", { class: "muted small-note" }, "main admin only");
+  return h("button", { class: "btn secondary small", onclick: async () => {
+    if (p.active && !confirm(`Remove ${p.name}'s access? They are signed out at once and cannot sign in. Nothing is deleted: their history stays in the journal, and access can be restored.`)) return;
+    const res = await api("POST", `/api/users/${encodeURIComponent(p.username)}/${p.active ? "deactivate" : "activate"}`);
+    toast(res.ok ? `${p.username} ${res.data.active ? "can sign in again" : "can no longer sign in"}.` : errorText(res), !res.ok);
+    route();
+  } }, p.active ? "Remove access" : "Restore access");
 }
 
 function accessRequests(waiting, decided, isAdmin) {
@@ -1005,7 +1030,7 @@ async function pageProof(main) {
 /* ------------------------------------------------------------------ journal */
 async function pageJournal(main) {
   const wrap = page(main, "Journal", "Everything that happened, in order. Each entry's hash includes the one before it.");
-  const kind = h("select", { id: "j-kind" }, ["", "DEPOSIT", "WITHDRAWAL", "TRANSFER", "HOLD", "HOLD_APPROVED", "HOLD_REJECTED", "REVERSAL", "ACCOUNT_OPENED", "ACCOUNT_STATUS", "OVERDRAFT_LIMIT", "USER_CREATED", "USER_STATUS", "ACCESS_DECISION", "AI_NOTE", "GENESIS"]
+  const kind = h("select", { id: "j-kind" }, ["", "DEPOSIT", "WITHDRAWAL", "TRANSFER", "HOLD", "HOLD_APPROVED", "HOLD_REJECTED", "REVERSAL", "ACCOUNT_OPENED", "ACCOUNT_STATUS", "OVERDRAFT_LIMIT", "USER_CREATED", "USER_STATUS", "ACCESS_DECISION", "MAIN_ADMIN", "AI_NOTE", "GENESIS"]
     .map((k) => h("option", { value: k }, k ? k.replaceAll("_", " ").toLowerCase() : "all kinds")));
   const status = h("select", { id: "j-status" }, [["", "any outcome"], ["posted", "posted"], ["refused", "refused"], ["info", "records"]].map(([v, l]) => h("option", { value: v }, l)));
   const acct = h("input", { id: "j-acct", placeholder: "LL-1001" });
