@@ -11,7 +11,7 @@ LedgerLine moves money between accounts so that:
 What sets it apart:
 
 * **The database is the backstop.** CHECK constraints and triggers mean even a buggy app cannot overdraw, create money or edit history.
-* **Mutation-tested tests.** `tools/mutation_check.py` removes each of 70 locks and checks; the test suite fails every time ([report](docs/MUTATION_REPORT.md)).
+* **Mutation-tested tests.** `tools/mutation_check.py` removes each of 76 locks and checks; the test suite fails every time ([report](docs/MUTATION_REPORT.md)).
 * **Red-team script.** `tools/attack.py` runs the judges' attacks against any URL and prints a scorecard.
 * **AI that flags, people who decide.** Sentinel holds risky payments in suspense with explained reasons. An optional LLM writes reviewer notes that never see user text and whose every number is checked. A test proves the AI cannot reach money-moving code.
 * **Race Lab** in the UI fires real concurrent requests from your browser.
@@ -56,6 +56,10 @@ Every user has a **My details** page (holders in the menu, staff by clicking the
 
 PostgreSQL enforces the same rules (`LL017`), and a 15th proof check replays who changed and checked every version.
 
+### Changing your password
+
+Anyone signed in can change their own password from **My details → Change password**: the current password, the new one, and the new one again (at least 10 characters, not the current one). A wrong current password changes nothing, and repeated wrong guesses are throttled like sign-in. The change signs you out on every other device, so a stolen session dies with the old password; you stay signed in where you made it. The journal records that it changed and who changed it, never the password or its hash, and PostgreSQL refuses a password change that is not on the record (`LL018`). Nobody, not even an administrator, can change someone else's password.
+
 ## Roles and what each may do
 
 | | admin | holder | auditor |
@@ -70,6 +74,7 @@ PostgreSQL enforces the same rules (`LL017`), and a 15th proof check replays who
 | Create administrators, remove or restore an administrator's access | main admin only | – | – |
 | Approve or decline auditor requests from sign-up | ✓ | – | sees them |
 | See and change your own personal details | ✓ | ✓ | ✓ |
+| Change your own password (needs the current one) | ✓ | ✓ | ✓ |
 | See other people's personal details | ✓ | – | status only |
 | Verify or send back personal details (never your own) | ✓ | – | – |
 | Proof, reconciliation, journal, flags, duplicates, evidence export | ✓ | – | ✓ |
@@ -99,9 +104,9 @@ After pulling an update, run `python -m app.cli migrate` again: it upgrades an e
 ## Prove it
 
 ```bash
-python -m pytest                          # 158 tests against real PostgreSQL, ~30 s
-python tools/mutation_check.py            # remove each lock/check, prove a test fails (~20 min)
-python tools/attack.py --url http://localhost:8000      # 16 attacks, two workers are fine
+python -m pytest                          # 166 tests against real PostgreSQL, ~30 s
+python tools/mutation_check.py            # remove each lock/check, prove a test fails (~22 min)
+python tools/attack.py --url http://localhost:8000      # 17 attacks, two workers are fine
 python -m app.cli verify                  # replay the whole journal: 15 checks
 python -m app.cli export evidence.json && python tools/verify_bundle.py evidence.json --public-key <key from /api/public-key>
 ```
@@ -124,7 +129,7 @@ One money request is **one transaction**: claim the key, lock the customer rows 
 
 ## Documents
 
-* [THREATS.md](THREATS.md): 98 threats, each with its defence, test, mutation and status, plus the risks we accepted and why.
+* [THREATS.md](THREATS.md): 104 threats, each with its defence, test, mutation and status, plus the risks we accepted and why.
 * [PROMPTS.md](PROMPTS.md): how AI was used and where it was wrong.
 * [docs/WRITEUP.md](docs/WRITEUP.md): what we built, what we did not, our integrity and concurrency model, what is unfinished.
 * [docs/API.md](docs/API.md): every endpoint, who may call it, what it does to the money.
@@ -141,7 +146,7 @@ Python 3.13 · FastAPI · PostgreSQL 16 (psycopg 3, raw SQL so the locking is vi
 ```
 app/schema.sql            every money rule PostgreSQL enforces
 app/migrations/           schema upgrades on top of it (002: auditor requests, role guards; 003: the main administrator;
-                          004: personal details)
+                          004: personal details; 005: password changes on the record)
 app/ledger/engine.py      every rupee moves through here
 app/ledger/journal.py     the only writer of journal rows and postings (hash chain + signatures)
 app/ledger/idempotency.py exactly-once

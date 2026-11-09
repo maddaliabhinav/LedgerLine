@@ -23,6 +23,7 @@ Base URL: your deployment (for example `https://ledgerline.onrender.com`). Inter
 | `POST /api/accounts/{no}/overdraft` | ✓ | – | – | none (moves the floor to −limit, max ₹50,000) |
 | `POST /api/users`, `/api/users/{u}/deactivate`, `/activate` | ✓ holders and auditors; **administrators: main admin only** | – | – | none |
 | `GET /api/me/details`, `PUT /api/me/details` (your own personal details) | ✓ | ✓ | ✓ | none |
+| `POST /api/me/password` (your own password) | ✓ | ✓ | ✓ | none |
 | `GET /api/users/{u}/details` (someone else's) | ✓ | – | – (status only, in `GET /api/users`) | read |
 | `POST /api/users/{u}/details/verify`, `/return` | ✓ (never your own) | – | – | none (the decision is journaled) |
 | `GET /api/access-requests` | ✓ | – | ✓ | read |
@@ -56,6 +57,11 @@ Anyone (public sign-up, the "Create user" tab on the home page). Body `{"usernam
 
 ### `POST /api/auth/logout`
 Any signed-in user. Revokes **all** of that user's tokens. `200 {"ok": true}`.
+
+### `POST /api/me/password`
+Any signed-in user, for their own password. Body `{"current_password": "…", "new_password": "at-least-10-chars", "confirm_password": "the same again"}`.
+`200` → same shape as login (a fresh `access_token` and `user`) plus `"message"`. Every other session of this user is signed out (`401 SESSION_REVOKED` on its next request); use the new token from here on. The change is journaled as `PASSWORD_CHANGED` (who and when, never the password or its hash).
+`403 WRONG_PASSWORD` (nothing changes, and you stay signed in) · `422` new password under 10 characters, re-entered differently (`confirm_password`), the same as the current one (`SAME_PASSWORD`), or unknown fields · `429 TOO_MANY_REQUESTS` after 10 wrong current passwords in 5 minutes (shared with sign-in). There is no endpoint to change anyone else's password, and the database refuses a password change that is not on the record (`LL018`).
 
 ### `GET /api/me`
 Any signed-in user. Returns username, name, role, `main_admin` and permissions (read fresh from the database; the web UI asks for it on every page load).
@@ -178,6 +184,7 @@ The basic details a bank keeps: date of birth, mobile, email, address, occupatio
 | 403 | `APPROVAL_PENDING`, `ACCESS_DECLINED` | sign-in for an auditor request that is waiting / was declined (right password only) | – |
 | 403 | `FORBIDDEN` | an admin-only or staff-only endpoint | – |
 | 403 | `OWN_DETAILS` | nobody verifies or sends back their own personal details | – |
+| 403 | `WRONG_PASSWORD` | the current password given to change it is wrong (you stay signed in) | – |
 | 409 | `DETAILS_CHANGED` | the personal details changed since you opened them; check the new version | – |
 | 403 | `MAIN_ADMIN_ONLY`, `MAIN_ADMIN_PROTECTED` | creating an administrator or changing an administrator's access needs the main administrator / nobody can remove the main administrator | the change itself is, when it happens |
 | 404 | `NOT_FOUND`, `DESTINATION_NOT_FOUND` | no such thing | dest ✓ |
@@ -185,9 +192,9 @@ The basic details a bank keeps: date of birth, mobile, email, address, occupatio
 | 409 | `INTEGRITY_BACKSTOP` | the database refused a write the app attempted (a bug signal); nothing moved | ✓ |
 | 409 | `IDEMPOTENCY_KEY_REUSED`, `REQUEST_IN_PROGRESS` | key misuse / first request still running; nothing moved | in the duplicates log |
 | 409 | `ALREADY_DECIDED`, `CONFLICT` | auditor request or version of personal details already decided / username taken, or another state conflict | – |
-| 422 | `VALIDATION_FAILED`, `SAME_ACCOUNT`, `DESTINATION_NOT_ALLOWED`, `NOT_REVERSIBLE` | malformed or impossible | the last three ✓ |
+| 422 | `VALIDATION_FAILED`, `SAME_ACCOUNT`, `DESTINATION_NOT_ALLOWED`, `NOT_REVERSIBLE`, `SAME_PASSWORD` | malformed or impossible | `SAME_ACCOUNT`, `DESTINATION_NOT_ALLOWED`, `NOT_REVERSIBLE` ✓ |
 | 428 | `IDEMPOTENCY_KEY_REQUIRED` | send an Idempotency-Key | – |
-| 429 | `TOO_MANY_REQUESTS` | login or sign-up throttled | – |
+| 429 | `TOO_MANY_REQUESTS` | sign-in, password change or sign-up throttled | – |
 | 503 | `BUSY` | lock or statement timeout; nothing moved, retry with the same key | – |
 
 ## curl examples

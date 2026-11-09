@@ -54,6 +54,12 @@ Version 4 (`app/migrations/004_personal_details.sql`) adds **personal details**:
 | On the record | `personal_details_on_record`, deferred to COMMIT (`LL017`) | A new version needs a `DETAILS_SUBMITTED` entry by the person; a decision needs `DETAILS_VERIFIED` / `DETAILS_RETURNED` by another administrator, for that version. The entries hold no values. |
 | Never deleted | `personal_details_no_delete` (`LL010`) | Corrected by a new version, not removed. |
 
+Version 5 (`app/migrations/005_password_changes.sql`) puts **password changes** on the record:
+
+| Rule | Where | What it means |
+|---|---|---|
+| A new password is on the record, by its owner | `users_password_on_record`, deferred to COMMIT (`LL018`) | A new `password_hash` needs a `PASSWORD_CHANGED` entry written by that same user in the same transaction. Nobody changes someone else's password through the app, and no change is silent. |
+
 `python -m app.cli migrate` applies them to a new database, and upgrades an existing one in place.
 
 System accounts: `SYS-EXTERNAL` (the outside world; the only account allowed below zero) and `SYS-SUSPENSE` (payments held for review).
@@ -219,6 +225,9 @@ Because the journal is permanent and signed, and personal details must stay corr
 
 **"What stops an admin from verifying their own details, or verifying and then changing them?"**
 `details.decide` refuses your own details (`403 OWN_DETAILS`), and the database refuses a decider who is the person (CHECK) or a decision not journaled by another administrator (`LL017`). A decision names the version the admin saw (`409 DETAILS_CHANGED` otherwise), and any change after that is a new version that waits again: the guard refuses a change that keeps "verified", even with a forged decision entry in the same transaction (M64).
+
+**"What happens when someone changes their password?"**
+`admin_ops.change_password` locks the user row, checks the current password with scrypt, refuses the same password again, writes the new hash and moves the user's `token_version` on, all in one transaction with a `PASSWORD_CHANGED` entry (who and when, nothing secret). Every other token fails its next request (`SESSION_REVOKED`), because `deps.current_user` compares the token's version with the database on every request; the response carries a fresh token for the device that made the change. Wrong current passwords count against the sign-in throttle. Tests: `tests/test_password.py`; mutations M71–M76.
 
 **Likely live-change requests, and where to make them:**
 

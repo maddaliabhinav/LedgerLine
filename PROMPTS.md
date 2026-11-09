@@ -116,6 +116,24 @@ that first added the files. Later entries link the exact fix commit.
 * **What we did instead:** Added Users to the auditor's menu, and checked the auditor's view in screenshots on desktop and phone: statuses shown, no details, no buttons.
 * **Fixed in:** [106d9f5](https://github.com/maddaliabhinav/LedgerLine/commit/106d9f5381e8689861496778a6d38956b0931a1a)
 
+### 12. 2026-11-09 — A mutation that crashed the code instead of removing the check (testing)
+
+* **Asked:** Let every user change their own password: current password, new password, new password again. (This entry is about a mutation written in the first build, found while doing it.)
+* **It produced:** The password change reuses the sign-in throttle, so the throttle's message changed. That moved the line mutation M31 edits, and the harness refused to run M31 ("pattern not found").
+* **What was wrong:** Reading M31 to retarget it showed what it had been doing since the first build. Its title is "Stop throttling password guesses", but it replaced `raise TooManyRequests(...)` with `print("throttle off", ...)`, and the `headers=` argument on the next line made that `print` call fail with a `TypeError`. So the mutated server answered `500`, not "the request goes through", and the test failed because of the crash. A crash is "caught" by any test that merely passes through that line, even one that never checks throttling, while a throttle that is really switched off is caught only by a test that checks it. Here the right test happened to catch it either way, but the report could not tell the two apart.
+* **How it was caught:** By reading what the replacement text actually does when it runs, not just its title.
+* **What we did instead:** M31 now replaces the throttle's condition with `if False:`, so the throttle really is off and every guess goes through. `test_password_guessing_is_throttled` still fails, now for the right reason. The new password mutations (M71–M76) follow the same rule: switch the check off, never break the code around it.
+* **Fixed in:** _(commit link to be added after the push)_
+
+### 13. 2026-11-09 — An attack script that would have locked itself out on its second run (demo)
+
+* **Asked:** Add the password change to `tools/attack.py`: a stolen session trying to change the password.
+* **It produced:** A first draft that also proved the throttle by making 12 wrong guesses at the current password, then had the owner change it.
+* **What was wrong:** The throttle counts failures per address across all users, not just per user. The draft would have left 11 failures from the script's own address, so the owner's change (same address) got `429` instead of showing that it ends the thief's session. Worse, anyone running `attack.py` again within 5 minutes, for example a judge trying it twice, would have been stopped at the start: `cannot sign in as admin: 429`.
+* **How it was caught:** Reading the draft against how `LoginThrottle` keys its counters, before running it. We then ran the corrected script twice in a row against a two-worker server: 17/17 stopped both times.
+* **What we did instead:** The attack makes one wrong attempt (`403 WRONG_PASSWORD`), lets the owner change the password, and shows the thief's session is gone (`401 SESSION_REVOKED`). Throttling of guesses is proven in the test suite (`test_guessing_the_current_password_is_throttled`), where the throttle is reset between tests.
+* **Fixed in:** _(commit link to be added after the push)_
+
 ---
 
 ## Your entries from here

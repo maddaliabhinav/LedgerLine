@@ -8,7 +8,7 @@ A money-movement system for a company's internal accounts. Anyone can sign up as
 2. **Exactly once.** Every money-moving request carries an Idempotency-Key. The same request arriving twice, or twenty times at once, moves money once and gets the same bytes back. Every duplicate is logged.
 3. **Provable history.** The journal records every posting, every refused attempt, every AI suggestion and every human decision. It is append-only (the database refuses edits), hash-chained (each entry commits to all before it) and Ed25519-signed with a key that is not in the database. Anyone can verify an exported ledger offline with only the public key.
 
-Alongside the system: a web UI for all three roles, including a **Race Lab** that fires real concurrent requests from the browser; **Sentinel**, an AI review layer that flags and explains but never decides; a red-team script (`tools/attack.py`); and a **mutation harness** (`tools/mutation_check.py`) that removes each of 70 locks and checks in turn and proves the test suite fails every time.
+Alongside the system: a web UI for all three roles, including a **Race Lab** that fires real concurrent requests from the browser; **Sentinel**, an AI review layer that flags and explains but never decides; a red-team script (`tools/attack.py`); and a **mutation harness** (`tools/mutation_check.py`) that removes each of 76 locks and checks in turn and proves the test suite fails every time.
 
 ## The integrity and concurrency model, in our own words
 
@@ -27,6 +27,8 @@ Alongside the system: a web UI for all three roles, including a **Race Lab** tha
 **Administrators, and the main administrator.** Several administrators share the daily work, so a held payment or an auditor request never waits for one person who is away. Who *is* an administrator is a different kind of decision, because that is how an insider would build a backdoor. So the first administrator is the **main administrator**: the only one who creates administrators or removes or restores an administrator's access, and nobody, the main administrator included, can remove them. Removing access never deletes anything: sessions end at once and the history stays under the person's name. PostgreSQL enforces all of it (`LL013`–`LL016`). When `migrate` upgrades an existing database, it records the switch as a signed `MAIN_ADMIN` entry, and the proof judges each administrator by the rule in force when it was created, so older history is not reported as a fault.
 
 **Personal details.** Every user keeps the basic details a bank needs (date of birth, mobile, email, address, occupation, an optional nominee; no ID numbers). Only the person changes them, and each change is a new version that waits to be checked. Any administrator except that person verifies the exact version they saw, or sends it back with a note; the row is locked, so two administrators cannot both decide. The person and administrators see the details; auditors only see whether they are verified. The details are deliberately kept out of the journal: a permanent, signed record is the wrong place for data that must stay correctable, so the journal holds who changed or checked which version, never a value. PostgreSQL enforces all of it (`LL017`), and a proof check replays the record against the stored details.
+
+**Changing your password.** Anyone signed in changes their own password with the current one and the new one typed twice. The change ends every other session at once (the token version moves on), so a stolen session dies with the old password, and it is on the record as `PASSWORD_CHANGED`, never with the password or its hash. Wrong current passwords are throttled like sign-in, and the database refuses a password change that is not on the record (`LL018`).
 
 **Double entry rather than single entry.** With external money as a real account (`SYS-EXTERNAL`) and held money as another (`SYS-SUSPENSE`), "money is conserved" becomes one simple, checkable statement: every entry sums to zero. Holds, reversals and approvals need no special cases; they are just more balanced entries.
 
@@ -53,7 +55,7 @@ We built LedgerLine with an AI coding assistant and treated its output as a pull
 
 * **Multiple currencies.** Each currency needs its own conservation equation plus FX accounts. INR only, enforced by a CHECK.
 * **Dual control (4-eyes) on reversals and approvals.** One administrator plus a journal entry plus auditor flags. The first thing we would add (THREATS A1).
-* **Handing over the main administrator role, or a password change.** Not in the app (A13). Today a lost or stolen main-administrator password needs the server operator.
+* **Handing over the main administrator role, or resetting someone else's password.** Not in the app (A13). People change their own password; a forgotten one (the main administrator's included) needs the server operator.
 * **Document checks for personal details.** No uploads, no OTP to the mobile number, no address registry; an administrator verifies against documents seen outside the app (A14). No ID numbers either, on purpose.
 * **Scheduled and batch transfers.** A batch is many transfers. We would add it as one atomic entry with N+1 postings and one key, but not before the core was proven.
 * **Natural-language queries over the ledger.** Letting a model write SQL against the journal is an injection vector. If ever, only via a validated filter schema.
@@ -67,7 +69,7 @@ We built LedgerLine with an AI coding assistant and treated its output as a pull
 * Login throttling is in memory per process (A4). There is no rate limit on money endpoints (A5).
 * No signing-key rotation procedure (A9). Held payments never auto-expire (A7).
 * An auditor request does not prove who is asking. The administrator has to confirm the person some other way (A12). We guarantee only that an administrator says yes, once, on the record.
-* Nobody can remove the main administrator, so a stolen main-administrator password cannot be locked out from inside the app (A13).
+* Nobody can remove the main administrator. If that password is stolen, only the main administrator can change it, and only while they still know it; nobody can reset another person's password in the app (A13).
 * Personal details are stored in plain text, every administrator can read everyone's, and reading them is not recorded (A15). They can be corrected but not erased (A16).
 * Upgrading an existing database (`migrate`) was checked by hand against databases built by the previous release, not by the automated suite, which always starts from a fresh database.
 * Throughput is bounded by the single chain head. We expect hundreds of entries per second, which we judged right for corporate payroll and vendor payments (A8).
