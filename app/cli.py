@@ -1,8 +1,8 @@
 """Command line: python -m app.cli <command>
 
   migrate            create the schema and the GENESIS entry, or upgrade an existing one (idempotent)
-  seed [--if-empty]  demo users, accounts and history (through the real engine), and one auditor
-                     request waiting for an administrator
+  seed [--if-empty]  demo users, accounts and history (through the real engine), one auditor
+                     request and one set of personal details waiting for an administrator
   verify             run the full proof and print the result (exit 1 if anything fails)
   export FILE        write an evidence bundle for tools/verify_bundle.py
   keygen             print a fresh random LEDGER_SIGNING_KEY value
@@ -15,11 +15,12 @@ import argparse
 import json
 import secrets
 import sys
+from datetime import date
 from pathlib import Path
 
 from . import db
 from .config import get_settings
-from .ledger import admin_ops, engine, proof
+from .ledger import admin_ops, details, engine, proof
 from .ledger.journal import append_entry
 from .signing import get_signer
 
@@ -43,6 +44,18 @@ DEMO_USERS = [
     ("rahul", "Rahul Verma", "holder", "LedgerRahul#2026"),
     ("acme", "Acme Supplies Pvt Ltd", "holder", "LedgerAcme#2026"),
 ]
+# Made-up personal details for the demo holders (example.com addresses, no real people).
+DEMO_DETAILS = {
+    "priya": {"date_of_birth": date(1996, 4, 12), "mobile": "9876543210", "email": "priya.sharma@example.com",
+              "address_line1": "Flat 302, Lakeview Residency", "address_line2": "Madhapur", "city": "Hyderabad",
+              "state": "Telangana", "pin_code": "500081", "occupation": "salaried",
+              "nominee_name": "Rakesh Sharma", "nominee_relation": "father"},
+    "rahul": {"date_of_birth": date(1993, 9, 21), "mobile": "9123456780", "email": "rahul.verma@example.com",
+              "address_line1": "12-4-56, MG Road", "address_line2": None, "city": "Vijayawada",
+              "state": "Andhra Pradesh", "pin_code": "520010", "occupation": "self_employed",
+              "nominee_name": "Anita Verma", "nominee_relation": "spouse"},
+}
+
 # Asked for auditor access at sign-up; cannot sign in until an administrator approves.
 DEMO_REQUEST = ("meera", "Meera Nair (External Auditor)", "LedgerMeera#2026")
 
@@ -172,6 +185,11 @@ def _seed_demo() -> None:
     # One payment Sentinel holds for review, so the admin queue is not empty on day one.
     engine.transfer(holder["acme"], accts["acme"], accts["rahul"], 2_80_000 * rupees, "Urgent advance", key())
     admin_ops.request_auditor_access(*DEMO_REQUEST)
+    # Personal details (made up, through the real path): Priya's are verified,
+    # Rahul's wait for an administrator to check them.
+    for username, values in DEMO_DETAILS.items():
+        details.submit(ids[username], values)
+    details.decide(admin.id, "priya", 1, True, None)
     print("seeded demo data:")
     for username, _, role, password in DEMO_USERS:
         print(f"  {role:8s} {username:8s} {password}")

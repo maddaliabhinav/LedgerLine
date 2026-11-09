@@ -93,6 +93,8 @@ def run_proof(cur: Cursor) -> dict:
         ("refusals", "Refused attempts recorded the true balance at that moment"),
         ("access", "Every user is on the record with their role; staff access only from an administrator, "
                    "administrators only from the main administrator"),
+        ("details", "Personal details changed only by their owner and checked only by another administrator, "
+                    "on the record"),
         ("backstop", "Database backstop never had to fire"),
     ]}
 
@@ -116,6 +118,7 @@ def run_proof(cur: Cursor) -> dict:
     user_created: dict[int, list[dict]] = defaultdict(list)
     access_decisions: dict = {}
     born_at = 1                      # schema version the database was created at (from GENESIS)
+    details_record: list[dict] = []  # DETAILS_* entries: who changed or checked which version (never the values)
     switches: list[dict] = []        # MAIN_ADMIN: an upgraded database's switch to the main-administrator rule
 
     for row, postings in iter_entries(cur):
@@ -207,6 +210,8 @@ def run_proof(cur: Cursor) -> dict:
             access_decisions[request_id] = row
         elif row["kind"] == "MAIN_ADMIN":
             switches.append(row)
+        elif row["kind"] in ("DETAILS_SUBMITTED", "DETAILS_VERIFIED", "DETAILS_RETURNED"):
+            details_record.append(row)
         elif row["kind"] == "GENESIS":
             born_at = int(row["details"].get("schema_version") or 1)
 
@@ -253,6 +258,7 @@ def run_proof(cur: Cursor) -> dict:
         f"key reuse refused: {replays.get('key_reused_with_different_request', 0)}; "
         f"in-flight retries: {replays.get('in_flight_timeout', 0)}")
     _check_access(cur, checks["access"], user_created, access_decisions, born_at, switches)
+    _check_details(cur, checks["details"], details_record)
     checks["chain"].summary = f"{entries} entries, #1 .. #{last_row['seq'] if last_row else 0}"
     checks["signatures"].summary = f"key {signer.key_id}"
     checks["backstop"].summary = "the application's own checks stopped every bad request"
@@ -368,6 +374,58 @@ def _check_access(cur: Cursor, check: _Check, user_created: dict[int, list[dict]
     check.summary = (f"{len(users)} users, {staff} with staff access, main administrator: "
                      f"{name(main_id) if main_id is not None else 'none'}{since}; "
                      f"auditor requests approved: {len(approved)}, declined: {len(decisions) - len(approved)}")
+
+
+def _check_details(cur: Cursor, check: _Check, record: list[dict]) -> None:
+    """Replay who changed and who checked each version of everyone's personal
+    details, and compare the result with the stored details. Every version must
+    come from its owner, one after another; every decision from an administrator
+    who is not the owner, once, on the current version."""
+    cur.execute("SELECT id, username, role FROM users")
+    users = {row["id"]: row for row in cur.fetchall()}
+    cur.execute("SELECT user_id, version, status, decided_by FROM personal_details")
+    stored = {row["user_id"]: row for row in cur.fetchall()}
+
+    def name(user_id: int) -> str:
+        return users[user_id]["username"] if user_id in users else f"user {user_id}"
+
+    replayed: dict[int, dict] = {}
+    for entry in record:
+        user_id, version = int(entry["details"].get("user_id") or 0), entry["details"].get("version")
+        now = replayed.get(user_id)
+        if entry["kind"] == "DETAILS_SUBMITTED":
+            expected = now["version"] + 1 if now else 1
+            if entry["actor_id"] != user_id:
+                check.fail(f"#{entry['seq']}: the details of {name(user_id)} were changed by someone else")
+            if version != expected:
+                check.fail(f"#{entry['seq']}: the details of {name(user_id)} jumped to version {version}, "
+                           f"expected {expected}")
+            replayed[user_id] = {"version": version, "status": "waiting", "decided_by": None}
+            continue
+        actor = users.get(entry["actor_id"])
+        if actor is None or actor["role"] != "admin" or actor["id"] == user_id:
+            check.fail(f"#{entry['seq']}: the details of {name(user_id)} were checked by someone who may not")
+        if now is None or version != now["version"]:
+            check.fail(f"#{entry['seq']}: a decision on version {version} of the details of {name(user_id)}, "
+                       "which is not their current version")
+        elif now["status"] != "waiting":
+            check.fail(f"#{entry['seq']}: version {version} of the details of {name(user_id)} was decided twice")
+        else:
+            now.update(status="verified" if entry["kind"] == "DETAILS_VERIFIED" else "returned",
+                       decided_by=entry["actor_id"])
+    for user_id in sorted(set(replayed) | set(stored)):
+        row, expected = stored.get(user_id), replayed.get(user_id)
+        if row is None:
+            check.fail(f"{name(user_id)} has details on the record but none stored")
+        elif expected is None:
+            check.fail(f"{name(user_id)} has stored details that are not on the record")
+        elif (row["version"], row["status"], row["decided_by"]) != \
+                (expected["version"], expected["status"], expected["decided_by"]):
+            check.fail(f"the details of {name(user_id)} say version {row['version']} {row['status']}, "
+                       f"the record says version {expected['version']} {expected['status']}")
+    by_status = Counter(row["status"] for row in stored.values())
+    check.summary = (f"{len(stored)} people gave details: {by_status['verified']} verified, "
+                     f"{by_status['waiting']} waiting, {by_status['returned']} sent back")
 
 
 def verify_single(cur: Cursor, seq: int) -> dict | None:
