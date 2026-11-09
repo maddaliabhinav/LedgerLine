@@ -8,8 +8,8 @@ It opens two fresh sandbox accounts for the holder (so demo balances are not
 drained), then fires concurrent overdraws, replay storms, key reuse, theft,
 minting, malformed amounts, forged tokens, edit attempts, deadlock bait,
 sign-ups that try to become staff, an administrator who tries to take over
-from the main administrator, and finally asks the auditor's proof whether
-the books still balance.
+from the main administrator, people reaching for someone else's personal
+details, and finally asks the auditor's proof whether the books still balance.
 Exit code 0 = every attack was stopped.
 """
 
@@ -163,6 +163,7 @@ def main() -> int:
 
     # 11. Public sign-up: become an admin, or get free money.
     name = f"intruder{uuid.uuid4().hex[:8]}"
+    newcomer = name                                    # used again in attack 15
     r1 = httpx.post(f"{args.url}/api/auth/register", timeout=60,
                     json={"username": name, "display_name": "Intruder", "password": "intruder-pass-123", "role": "admin"})
     r2 = httpx.post(f"{args.url}/api/auth/register", timeout=60,
@@ -228,6 +229,23 @@ def main() -> int:
         ok, detail = False, f"could not set up: creating an administrator as {admin.user} -> {code(made)} " \
                             "(run with the main administrator's credentials)"
     record("a second admin creates admins or removes the main admin", ok, detail)
+
+    # 15. Personal details: read someone else's, check your own, or find them in
+    #     the permanent record. (The newcomer from attack 11 saves made-up details.)
+    person = Client(args.url, newcomer, "intruder-pass-123")
+    mine = {"date_of_birth": "1991-03-14", "mobile": f"9{uuid.uuid4().int % 10**9:09d}", "email": f"{newcomer}@example.com",
+            "address_line1": f"Door {uuid.uuid4().hex[:6]}, Attack Street", "city": "Guntur", "state": "Andhra Pradesh",
+            "pin_code": "522002", "occupation": "other"}
+    saved = httpx.put(f"{args.url}/api/me/details", headers=person.headers, json=mine, timeout=60).status_code
+    by_holder = holder.get(f"/api/users/{newcomer}/details").status_code
+    by_auditor = auditor.get(f"/api/users/{newcomer}/details").status_code
+    own_check = person.post(f"/api/users/{newcomer}/details/verify", {"version": 1}, key=None).status_code
+    record_text = auditor.get("/api/audit/journal?kind=DETAILS_SUBMITTED&limit=200").text
+    leaked = [field for field in ("mobile", "email", "address_line1") if mine[field] in record_text]
+    ok = saved == 200 and (by_holder, by_auditor, own_check) == (403, 403, 403) and not leaked
+    record("read someone's personal details, check your own, find them in the journal", ok,
+           f"save own -> {saved}; holder reads -> {by_holder}; auditor reads -> {by_auditor}; "
+           f"verify own -> {own_check}; values in the journal: {leaked or 'none'}")
 
     end = auditor.get("/api/audit/proof").json()
     failing = [c["title"] for c in end["checks"] if not c["ok"]]

@@ -45,6 +45,8 @@ SCHEMA = "app/schema.sql"
 ADMIN_OPS = "app/ledger/admin_ops.py"
 ACCESS_SQL = "app/migrations/002_access_requests.sql"
 MAIN_SQL = "app/migrations/003_main_admin.sql"
+DETAILS = "app/ledger/details.py"
+DETAILS_SQL = "app/migrations/004_personal_details.sql"
 BALANCE_CHECK = 'if amount > accounts.available(source):                    # THE balance check'
 OWNER_CHECK = 'if source["owner_id"] != actor.id:'
 DAILY_CHECK = 'if _daily_outgoing(cur, source["id"]) + amount > source["daily_limit"]:'
@@ -191,6 +193,33 @@ MUTATIONS = [
              "if marked != ([main_id] if main_id is not None else []):", "if False:"),
     Mutation("M59", "Database allows a second switch to the main-administrator rule", MAIN_SQL,
              "CREATE UNIQUE INDEX journal_one_main_admin_switch ON journal ((true)) WHERE kind = 'MAIN_ADMIN';\n", ""),
+    # --- personal details: the person changes them, another administrator checks them ------
+    Mutation("M60", "Let an administrator check their own personal details", DETAILS,
+             'if user["id"] == actor_id:', "if False:"),
+    Mutation("M61", "Verify details without checking the version that was seen", DETAILS,
+             'if row["version"] != version:', "if False:"),
+    Mutation("M62", "Decide the same version of personal details twice", DETAILS,
+             'if row["status"] != "waiting":', "if False:"),
+    Mutation("M63", "Remove the row lock before deciding on personal details", DETAILS,
+             'FROM personal_details WHERE user_id = %s FOR UPDATE", (user["id"],))',
+             'FROM personal_details WHERE user_id = %s", (user["id"],))'),
+    Mutation("M64", "Database lets changed details keep their old verification", DETAILS_SQL,
+             "IF NEW.version <> OLD.version + 1 OR NEW.status <> 'waiting' THEN", "IF FALSE THEN"),
+    Mutation("M65", "Database accepts a decision on details from anyone (LL017)", DETAILS_SQL,
+             "ELSE actor.role = 'admin' AND actor.id <> NEW.user_id AND actor.id = NEW.decided_by END) THEN",
+             "ELSE true END) THEN"),
+    Mutation("M66", "Database accepts a change of details made by someone else (LL017)", DETAILS_SQL,
+             "CASE WHEN expected = 'DETAILS_SUBMITTED' THEN actor.id = NEW.user_id",
+             "CASE WHEN expected = 'DETAILS_SUBMITTED' THEN true"),
+    Mutation("M67", "Proof stops comparing stored details with the record", "app/ledger/proof.py",
+             'elif (row["version"], row["status"], row["decided_by"]) != \\', "elif False and \\"),
+    Mutation("M68", "Write the personal details themselves into the journal", DETAILS,
+             '"fields": changed})', '"fields": changed, "values": {f: str(values.get(f)) for f in changed}})'),
+    Mutation("M69", "Let auditors read personal details", "app/api/routes_details.py",
+             'checkers = require_roles("admin")', 'checkers = require_roles("admin", "auditor")'),
+    Mutation("M70", "Let personal details be deleted", DETAILS_SQL,
+             "CREATE TRIGGER personal_details_no_delete BEFORE DELETE ON personal_details\n"
+             "    FOR EACH ROW EXECUTE FUNCTION forbid_mutation();\n", ""),
 ]
 
 
