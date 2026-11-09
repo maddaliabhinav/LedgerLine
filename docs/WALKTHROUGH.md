@@ -44,6 +44,16 @@ Version 3 (`app/migrations/003_main_admin.sql`) adds **the main administrator**:
 | An administrator's access, only by the main administrator | `users_admin_access`, deferred to COMMIT (`LL016`) | Removing or restoring an administrator needs a signed `USER_STATUS` entry by the main administrator, for that user and that state. |
 | The switch is on the record | `journal_one_main_admin_switch` (unique index) + `migrate` | Upgrading an existing database appends one signed `MAIN_ADMIN` entry naming the main administrator. Administrators created before it were made under the old rule, and the proof judges them by it. |
 
+Version 4 (`app/migrations/004_personal_details.sql`) adds **personal details**: date of birth, mobile, email, address, occupation and an optional nominee, kept in `personal_details`, never in the journal.
+
+| Rule | Where | What it means |
+|---|---|---|
+| Valid formats | CHECKs on `personal_details` | 10-digit mobile starting 6–9, 6-digit PIN code, an email shape, a nominee given in full or not at all. |
+| Nobody decides their own | CHECK `nobody_decides_their_own` | The decider is never the person. |
+| A change is checked again | `personal_details_guard` (`LL017`) | Any change is the next version, waiting; a decision is made once per version; nothing else may change. |
+| On the record | `personal_details_on_record`, deferred to COMMIT (`LL017`) | A new version needs a `DETAILS_SUBMITTED` entry by the person; a decision needs `DETAILS_VERIFIED` / `DETAILS_RETURNED` by another administrator, for that version. The entries hold no values. |
+| Never deleted | `personal_details_no_delete` (`LL010`) | Corrected by a new version, not removed. |
+
 `python -m app.cli migrate` applies them to a new database, and upgrades an existing one in place.
 
 System accounts: `SYS-EXTERNAL` (the outside world; the only account allowed below zero) and `SYS-SUSPENSE` (payments held for review).
@@ -54,7 +64,7 @@ System accounts: `SYS-EXTERNAL` (the outside world; the only account allowed bel
 * `journal.py`: `append_entry()`, the **only** writer of journal rows and postings. It locks the chain head, computes each posting's expected balance, hashes, signs, inserts and advances the head.
 * `accounts.py`: `lock()` takes `SELECT … FOR UPDATE` on customer accounts **in ascending id order**.
 * `idempotency.py`: claim (INSERT first), complete (store the exact response), answer duplicates.
-* `proof.py`: replays the whole journal and runs 14 checks. `statements.py`: statements. `admin_ops.py`: open, freeze, overdraft, users, auditor requests (`request_auditor_access`, `decide_access_request`). `ai_notes.py`: puts AI output on the record.
+* `proof.py`: replays the whole journal and runs 15 checks. `statements.py`: statements. `admin_ops.py`: open, freeze, overdraft, users, auditor requests (`request_auditor_access`, `decide_access_request`). `ai_notes.py`: puts AI output on the record.
 * `app/signing.py`: canonical JSON, SHA-256 and Ed25519.
 
 The shape of every money request (top of `engine.py`):
@@ -203,6 +213,12 @@ Approvals should not wait for one person, so every administrator can deposit, ap
 
 **"What happens to an existing database when you upgrade?"**
 `migrate` makes the first *active* administrator the main one and appends a signed `MAIN_ADMIN` entry saying so. Administrators that another administrator created before that entry were legal at the time, so the proof judges each one by the rule in force when it was created. Without that, the proof would have failed on honest history: PROMPTS.md entry 10.
+
+**"Why aren't the personal details in your tamper-proof journal?"**
+Because the journal is permanent and signed, and personal details must stay correctable. Anything written there can never be fixed or removed, and it ends up in every evidence export. So the details live in their own table, and the journal records only who changed or checked which version, and which fields changed. The "send back" note stays out too, because it may quote the details. Tests: `tests/test_personal_details.py`; mutation M68 writes the values into the journal and a test fails.
+
+**"What stops an admin from verifying their own details, or verifying and then changing them?"**
+`details.decide` refuses your own details (`403 OWN_DETAILS`), and the database refuses a decider who is the person (CHECK) or a decision not journaled by another administrator (`LL017`). A decision names the version the admin saw (`409 DETAILS_CHANGED` otherwise), and any change after that is a new version that waits again: the guard refuses a change that keeps "verified", even with a forged decision entry in the same transaction (M64).
 
 **Likely live-change requests, and where to make them:**
 

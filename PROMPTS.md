@@ -107,6 +107,15 @@ that first added the files. Later entries link the exact fix commit.
 * **What we did instead:** The switch to the new rule is now on the signed record. When `migrate` upgrades a database across version 3, it appends one `MAIN_ADMIN` journal entry naming the main administrator (the database allows only one). The proof judges each administrator by the rule in force when it was created: before that entry, another administrator was enough; after it, only the main administrator. A database created at version 3 or later follows the new rule from its first entry. The proof also checks that the main-administrator flag in `users` matches the signed record, so a flag moved behind the guards is caught directly. Re-checked by hand: both test databases and our UI database (all built by the old code) upgrade, pass all 14 checks, keep the new rules (the third administrator can no longer create administrators) and verify offline with `tools/verify_bundle.py`. The rule itself has tests (`test_administrators_are_judged_by_the_rule_in_force_when_they_were_created` and two more); the upgrade run is not in the automated suite, because it needs a second database built by old code.
 * **Fixed in:** [a1e2d82](https://github.com/maddaliabhinav/LedgerLine/commit/a1e2d820128596a1e15803f83536764448dda9b0)
 
+### 11. 2026-11-09 — A page the auditor was allowed to see but could not reach (ui)
+
+* **Asked:** Add the basic personal details a bank needs for every user. We chose: no ID numbers, an administrator verifies them, money rules unchanged, and only the person and administrators see the details (auditors see only whether they are verified).
+* **It produced:** The details, the checks and a "Personal details" status column on the People page, which auditors may open (the API and the page's own route both allow it).
+* **What was wrong:** The auditor's menu had never linked to the People page, since the first build. The README has said since 8 Nov that auditors "see" auditor requests, which are on that page too. Both claims were true only for someone who typed `#/users` into the address bar. Every API test passed, because the API was right.
+* **How it was caught:** The browser walkthrough for the new feature signed in as the auditor and checked that the menu has a way to the People page. It did not.
+* **What we did instead:** Added Users to the auditor's menu, and checked the auditor's view in screenshots on desktop and phone: statuses shown, no details, no buttons.
+* **Fixed in:** _(commit link to be added after the push)_
+
 ---
 
 ## Your entries from here

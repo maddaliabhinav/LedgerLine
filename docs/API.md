@@ -22,6 +22,9 @@ Base URL: your deployment (for example `https://ledgerline.onrender.com`). Inter
 | `POST /api/accounts/{no}/freeze`, `/unfreeze`, `/close` | ✓ | – | – | none (stops movement) |
 | `POST /api/accounts/{no}/overdraft` | ✓ | – | – | none (moves the floor to −limit, max ₹50,000) |
 | `POST /api/users`, `/api/users/{u}/deactivate`, `/activate` | ✓ holders and auditors; **administrators: main admin only** | – | – | none |
+| `GET /api/me/details`, `PUT /api/me/details` (your own personal details) | ✓ | ✓ | ✓ | none |
+| `GET /api/users/{u}/details` (someone else's) | ✓ | – | – (status only, in `GET /api/users`) | read |
+| `POST /api/users/{u}/details/verify`, `/return` | ✓ (never your own) | – | – | none (the decision is journaled) |
 | `GET /api/access-requests` | ✓ | – | ✓ | read |
 | `POST /api/access-requests/{id}/approve`, `/decline` | ✓ | – | – | none (creates the auditor on approval; the decision is journaled) |
 | `GET /api/accounts`, `/api/accounts/{no}`, `/statement` | all | own only | all | read |
@@ -120,10 +123,27 @@ A **new** entry moves the money back the way it came: transfer → payee to paye
 
 The first administrator is the **main administrator**. Any administrator manages holders and auditors; only the main administrator manages administrators; nobody can remove the main administrator. Nothing is ever deleted: removing access ends every session at once and keeps the history.
 
-* `GET /api/users` (admin, auditor): everyone, with `username`, `name`, `role`, `main_admin`, `active` and number of accounts.
+* `GET /api/users` (admin, auditor): everyone, with `username`, `name`, `role`, `main_admin`, `active`, number of accounts, and the status of their personal details (`details`: `none`, `waiting`, `verified` or `returned`, plus `details_version`). Never the details themselves.
 * `POST /api/users` (admin): `{"username", "display_name", "role": "holder" | "auditor" | "admin", "password"}` → `201`, journaled `USER_CREATED` naming who created it. `"role": "admin"` needs the main administrator: anyone else gets `403 MAIN_ADMIN_ONLY`. `409` username taken.
 * `POST /api/users/{u}/deactivate` and `/activate` (admin): removes or restores access, journaled `USER_STATUS`. `200` → `{"username", "active"}`. For an administrator's access: `403 MAIN_ADMIN_ONLY` unless you are the main administrator. For the main administrator: `403 MAIN_ADMIN_PROTECTED`, whoever asks. Your own access: `409`.
 * The database enforces the same: one main administrator, set once (`LL013`); never deactivated (`LL015`); administrators created only by the main administrator, on the record (`LL014`); an administrator's access changed only with the main administrator's signed `USER_STATUS` entry (`LL016`).
+
+## Personal details
+
+The basic details a bank keeps: date of birth, mobile, email, address, occupation and an optional nominee. No ID numbers. Only the person changes them; any administrator except that person verifies a version or sends it back. The person and administrators see them; auditors see only the status. The details never enter the journal: `DETAILS_SUBMITTED`, `DETAILS_VERIFIED` and `DETAILS_RETURNED` entries record who did what to which version (and which fields changed), never a value.
+
+* `GET /api/me/details` (anyone signed in): `{"username", "name", "status", "version", "details": {...} | null, "submitted_at", "decided_by", "decided_at", "return_note", "choices": {"states", "occupations", "relations"}}`. `status` is `none` (nothing given yet), `waiting`, `verified` or `returned` (sent back, with `return_note`).
+* `PUT /api/me/details` (anyone signed in), body:
+  ```json
+  {"date_of_birth": "1996-04-12", "mobile": "98765 43210", "email": "priya@example.com",
+   "address_line1": "Flat 302, Lakeview Residency", "address_line2": "Madhapur", "city": "Hyderabad",
+   "state": "Telangana", "pin_code": "500081", "occupation": "salaried",
+   "nominee_name": "Rakesh Sharma", "nominee_relation": "father"}
+  ```
+  → `200`, same shape as GET. Any change is a new `version` with status `waiting`; saving the same details again changes and records nothing. `422` for: a mobile number that is not 10 digits starting 6–9 (`+91`, spaces and hyphens are accepted), a PIN code that is not 6 digits or starts with 0, a malformed email, a date of birth that is not a real `YYYY-MM-DD` date or makes you younger than 18, a state that is not an Indian state or union territory, an unknown occupation or relation, a nominee name without a relation (or the reverse), control or direction-changing characters, and any unknown field (`pan`, `aadhaar`, `status`...).
+* `GET /api/users/{u}/details` (admin): the same view of that person's details. `403` for holders and auditors.
+* `POST /api/users/{u}/details/verify` (admin), body `{"version": 2}`: verifies exactly that version. `POST /api/users/{u}/details/return` (admin), body `{"version": 2, "note": "PIN code does not match the address proof"}`: sends it back; the note (required, ≤200 characters) is shown to the person and stored with the details, not in the journal. Both `200` → the new view. `403 OWN_DETAILS` for your own details · `404` nothing given yet · `409 DETAILS_CHANGED` the person saved a newer version meanwhile (open it again) · `409 ALREADY_DECIDED` that version was already verified or sent back.
+* The database enforces the same (`LL017`): a new version needs a `DETAILS_SUBMITTED` entry by the person; a decision needs a `DETAILS_VERIFIED` / `DETAILS_RETURNED` entry by an administrator who is not the person, for that version; a change never keeps an old decision; details are never deleted (`LL010`).
 
 ## Auditor requests (from sign-up)
 
@@ -136,7 +156,7 @@ The first administrator is the **main administrator**. Any administrator manages
 
 * `GET /api/reviews?state=pending|decided|all`: held payments with Sentinel's score, reasons and features, the latest AI note, and the decision if any.
 * `POST /api/reviews/{seq}/ai-note`: asks the LLM (if configured) for a reviewer note. No money moves; the note is journaled as `AI_NOTE` with the model name. The same facts reuse the cached note.
-* `GET /api/audit/proof`: replays the whole journal and returns 14 checks (chain, signatures, head, double entry, replay, floors, stored balances, conservation, suspense, single decisions, exactly-once, refusal balances, access, backstop) plus totals. *Access* checks that every user has exactly one `USER_CREATED` entry with the role it has now, that every auditor was created by another administrator, that the main-administrator flag matches the signed record, and that every administrator was created by the rule in force at the time (by another administrator before the upgrade's `MAIN_ADMIN` entry, by the main administrator after it).
+* `GET /api/audit/proof`: replays the whole journal and returns 15 checks (chain, signatures, head, double entry, replay, floors, stored balances, conservation, suspense, single decisions, exactly-once, refusal balances, access, personal details, backstop) plus totals. *Access* checks that every user has exactly one `USER_CREATED` entry with the role it has now, that every auditor was created by another administrator, that the main-administrator flag matches the signed record, and that every administrator was created by the rule in force at the time (by another administrator before the upgrade's `MAIN_ADMIN` entry, by the main administrator after it). *Personal details* replays every `DETAILS_*` entry (each version from its owner, one after another; each decision from another administrator, once, on the current version) and compares the result with the stored details.
 * `POST /api/audit/reconciliation`: the proof plus a plain-English summary (LLM if configured, template otherwise), journaled.
 * `GET /api/audit/journal?kind=&status=&account=&before_seq=&limit=`: the hash-chained journal.
 * `GET /api/audit/flags`: held payments, elevated scores, authorisation refusals, database backstops (should be empty), reversals, control changes (including auditor-access decisions), large deposits, key reuse.
@@ -157,12 +177,14 @@ The first administrator is the **main administrator**. Any administrator manages
 | 403 | `ROLE_NOT_PERMITTED`, `NOT_ACCOUNT_OWNER` | not allowed | ✓ |
 | 403 | `APPROVAL_PENDING`, `ACCESS_DECLINED` | sign-in for an auditor request that is waiting / was declined (right password only) | – |
 | 403 | `FORBIDDEN` | an admin-only or staff-only endpoint | – |
+| 403 | `OWN_DETAILS` | nobody verifies or sends back their own personal details | – |
+| 409 | `DETAILS_CHANGED` | the personal details changed since you opened them; check the new version | – |
 | 403 | `MAIN_ADMIN_ONLY`, `MAIN_ADMIN_PROTECTED` | creating an administrator or changing an administrator's access needs the main administrator / nobody can remove the main administrator | the change itself is, when it happens |
 | 404 | `NOT_FOUND`, `DESTINATION_NOT_FOUND` | no such thing | dest ✓ |
 | 409 | `INSUFFICIENT_FUNDS`, `DAILY_LIMIT_EXCEEDED`, `ACCOUNT_NOT_ACTIVE`, `DESTINATION_NOT_ACTIVE`, `HOLD_ALREADY_DECIDED`, `ALREADY_REVERSED` | refused by a business rule | ✓ |
 | 409 | `INTEGRITY_BACKSTOP` | the database refused a write the app attempted (a bug signal); nothing moved | ✓ |
 | 409 | `IDEMPOTENCY_KEY_REUSED`, `REQUEST_IN_PROGRESS` | key misuse / first request still running; nothing moved | in the duplicates log |
-| 409 | `ALREADY_DECIDED`, `CONFLICT` | auditor request already decided / username taken, or another state conflict | – |
+| 409 | `ALREADY_DECIDED`, `CONFLICT` | auditor request or version of personal details already decided / username taken, or another state conflict | – |
 | 422 | `VALIDATION_FAILED`, `SAME_ACCOUNT`, `DESTINATION_NOT_ALLOWED`, `NOT_REVERSIBLE` | malformed or impossible | the last three ✓ |
 | 428 | `IDEMPOTENCY_KEY_REQUIRED` | send an Idempotency-Key | – |
 | 429 | `TOO_MANY_REQUESTS` | login or sign-up throttled | – |

@@ -18,12 +18,13 @@ if the defence were removed. Status is one of:
 | Exactly once | One (user, Idempotency-Key) moves money at most once and always gets the same answer. |
 | Entitlement | Money leaves a customer account only at its owner's request (or by an administrator's journaled reversal, or by the approval of a payment its owner requested). |
 | The record | Every posting, every refused attempt, every AI suggestion and every human decision is in an append-only, hash-chained, Ed25519-signed journal. |
+| Personal details | Only the person changes their own details; only an administrator who is not that person verifies them, one version at a time; only the person and administrators see them; they never enter the permanent journal. |
 | Who may sign in | Administrator access is never self-service: only the main administrator creates administrators or removes an administrator's access, and nobody can remove the main administrator. Auditor access is granted only by an administrator's decision, on the record. A user keeps the role it was created with. |
 
 | Party | Trust |
 |---|---|
 | Browser / API client | Untrusted. Every rule is enforced server-side, and amounts, accounts and memos are re-validated. "The form will not let you" is never relied on. |
-| Administrators | Trusted with the daily work (deposits, approvals, reversals, auditor requests, holders and auditors), each action attributed and on the record (see A1). Not trusted to decide who else is an administrator. |
+| Administrators | Trusted with the daily work (deposits, approvals, reversals, auditor requests, holders and auditors, checking personal details), each action attributed and on the record (see A1). They can read everyone's personal details (A15). Not trusted to decide who else is an administrator, or to change anyone's personal details. |
 | Main administrator | The top of authority: the only one who creates administrators or removes or restores their access. Nobody can remove them. Trusted (see A13). |
 | Application server | Trusted to run the rules, but **assumed buggy**. PostgreSQL re-checks the critical rules itself (the floor CHECK, balance-only-via-posting, double entry, append-only, and the uniqueness of keys, decisions and reversals). |
 | Database owner / DBA | Can bypass triggers. Not trusted for integrity: tampering is detected through the hash chain and signatures, whose signing key is **not** stored in the database. |
@@ -169,6 +170,22 @@ Any administrator does the daily work, so approvals and deposits never wait for 
 | T88 | **A removed administrator keeps working** with a token issued before the removal. | Removing access bumps the user's token version, and every request re-reads `is_active` and the version, so the next request gets `401 SESSION_REVOKED`. | `test_only_the_main_administrator_removes_or_restores_administrators`, attack.py. M27. | Closed |
 | T89 | **"Delete" an administrator to erase what they did.** | There is no delete. Removing access keeps the user, and the journal is append-only, so every deposit, approval and decision they made stays under their name, and their access can be restored. | `test_only_the_main_administrator_removes_or_restores_administrators`, `test_the_ledger_has_no_edit_or_delete_routes` | Closed |
 
+## J. Personal details
+
+Every user can keep the basic details a bank needs: date of birth, mobile, email, address, occupation and an optional nominee. No ID numbers are collected. Only the person changes them, and every change is a new version that waits to be checked. Any administrator except that person verifies a version or sends it back with a note.
+
+| ID | Attack | Defence | Proof | Status |
+|---|---|---|---|---|
+| T90 | **Read someone else's personal details** (another holder, or an auditor). | Only the person (`GET /api/me/details`) and administrators (`GET /api/users/{u}/details`) see them. Auditors get only the status, in `GET /api/users`. | `test_only_the_person_and_administrators_see_details`, attack.py. M69. | Closed |
+| T91 | **Change someone else's details**, for example an administrator "correcting" a customer's mobile number. | There is no endpoint for it: `PUT /api/me/details` always writes the caller's own details. At commit the database needs a `DETAILS_SUBMITTED` entry written by the person themselves (`LL017`). | `test_only_the_person_can_change_their_details`, `test_the_database_keeps_details_on_the_record`. M66. | Closed |
+| T92 | **Verify your own details** (an insider administrator, or a holder). | Verifying needs the admin role, and nobody decides on their own details (`403 OWN_DETAILS`). The database refuses it too: a CHECK on the decider, and at commit a decision entry by an administrator who is not the person (`LL017`). | `test_nobody_checks_their_own_details`, `test_the_database_keeps_details_on_the_record`, attack.py. M60, M65. | Closed |
+| T93 | **Keep a "verified" badge after changing the details** (get verified once, then change the address). | Every change is a new version that waits to be checked again. The database guard refuses a change that keeps an old decision, even when a decision entry is forged in the same transaction (`LL017`). | `test_changing_verified_details_sends_them_back_for_checking`, `test_the_database_keeps_details_on_the_record`. M64. | Closed |
+| T94 | **Verify details nobody saw**: the person changes them between the administrator opening them and clicking Verify. | A decision names the version that was looked at. Any other version gets `409 DETAILS_CHANGED`, and the database needs the decision entry for that exact version. | `test_a_check_applies_only_to_the_version_that_was_seen`. M61. | Closed |
+| T95 | **Two administrators decide at once** (verify and send back): "verified" with a note attached, or two decisions on the record. | The details row is locked (`FOR UPDATE`) and its state checked under the lock, so the second decision gets `409 ALREADY_DECIDED`. The database allows one decision per version, and the proof flags a version decided twice. | `test_two_administrators_deciding_at_once_decide_once`, `test_sending_back_needs_a_note_that_stays_out_of_the_journal`. M62, M63. | Closed |
+| T96 | **Personal data leaks into the permanent record**: the signed, append-only journal, the evidence export anyone can verify, or the AI. Once there, it could never be corrected or removed. | The journal records only who changed or checked which version, and the names of the fields that changed, never a value. The "send back" note may mention the details, so it is stored with them, not in the journal. Exports carry journal entries only. Sentinel and the LLM never see personal details. | `test_a_person_saves_their_details_and_they_wait_for_a_check`, `test_sending_back_needs_a_note_that_stays_out_of_the_journal`, attack.py. M68. | Closed |
+| T97 | **A database owner marks details verified, or deletes them**, behind the guards. | Deleting is refused by a trigger (`LL010`). With the triggers switched off, the proof replays every `DETAILS_*` entry, compares the result with the stored details and names the person whose details disagree. | `test_the_proof_catches_details_marked_verified_behind_the_guards`, `test_the_database_keeps_details_on_the_record`. M67, M70. | Closed (Detected for the database owner) |
+| T98 | **Script or spoofing through an address field**, aimed at the administrator who checks it. | Text fields refuse control and direction-changing characters, the UI never uses `innerHTML`, and the CSP is strict. Formats (mobile, PIN code, email, date of birth, state) are checked on the server and again by the database. | `test_bad_details_are_refused` | Mitigated (A6) |
+
 ---
 
 ## Accepted risks: what is still open, and why
@@ -185,6 +202,9 @@ Any administrator does the daily work, so approvals and deposits never wait for 
 * **A11. Sign-up limiting is in memory, per process and per address.** Many addresses (or more workers) get more sign-ups. A CAPTCHA or email verification would be the next step; we left it out of a demo system on purpose.
 * **A12. A request does not prove who is asking.** The administrator sees a name, a username and when they asked, and must confirm the person some other way (we have no email or employee-ID check). What we guarantee is that only an administrator can say yes, once, on the record.
 * **A13. One main administrator, and no hand-over in the app.** Nobody can remove the main administrator, so if that password is stolen, the app itself cannot lock the account out. If the main administrator leaves, nobody can add or remove administrators (the others keep the daily work going). Recovery is a job for whoever runs the server: with database access they can set a new password hash and bump `token_version` to end every session. The guards allow both, but neither is journaled. The app has no password change at all yet. A signed hand-over from the command line, on the record, is the next step. We did not build a way to promote someone inside the app, because that is exactly what an insider would attack.
+* **A14. "Verified" is a person's judgement.** LedgerLine sees no documents, sends no OTP to the mobile number or link to the email, and checks no address against a registry. "Verified" means that an administrator who is not the person checked this exact version against something outside the app, on the record.
+* **A15. Personal details are readable by every administrator, and stored in plain text.** Anyone with database access can read them, and reading them is not recorded anywhere. Column encryption, a log of who looked at whose details, and limiting which administrators see what are the next steps.
+* **A16. Personal details can be corrected, not erased.** Banks must keep these records, so the app has no delete. Because the details never enter the journal, erasing them later stays possible without touching the signed history; it would need its own recorded event so that the proof still agrees.
 * **A10. Sentinel is heuristic.** Rules with robust statistics, not a trained model. It will miss patterns it does not encode and will sometimes hold honest payments; a person always decides.
 
 ## Things we found that are easy to miss
@@ -199,6 +219,8 @@ Any administrator does the daily work, so approvals and deposits never wait for 
 * T63: telling the fraudster which rule caught them.
 * T53: tail truncation passes every internal check; only an outside anchor catches it.
 * T87: an upgrade that adds a rule must not judge the past by it. The switch itself belongs on the signed record.
+* T96: a permanent, signed record is exactly the wrong place for personal data, because it could never be corrected or erased. The journal says who changed which version, never what.
+* T94: "verified" must name the version the administrator actually saw, or the person can change the details in between.
 
 ## How we know the tests test something
 

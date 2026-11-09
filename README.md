@@ -11,7 +11,7 @@ LedgerLine moves money between accounts so that:
 What sets it apart:
 
 * **The database is the backstop.** CHECK constraints and triggers mean even a buggy app cannot overdraw, create money or edit history.
-* **Mutation-tested tests.** `tools/mutation_check.py` removes each of 59 locks and checks; the test suite fails every time ([report](docs/MUTATION_REPORT.md)).
+* **Mutation-tested tests.** `tools/mutation_check.py` removes each of 70 locks and checks; the test suite fails every time ([report](docs/MUTATION_REPORT.md)).
 * **Red-team script.** `tools/attack.py` runs the judges' attacks against any URL and prints a scorecard.
 * **AI that flags, people who decide.** Sentinel holds risky payments in suspense with explained reasons. An optional LLM writes reviewer notes that never see user text and whose every number is checked. A test proves the AI cannot reach money-moving code.
 * **Race Lab** in the UI fires real concurrent requests from your browser.
@@ -20,8 +20,8 @@ What sets it apart:
 
 | Role | Username | Password | Can |
 |---|---|---|---|
-| Account holder | `priya` | `LedgerPriya#2026` | own accounts LL-1001 (Salary), LL-1002 (Savings): withdraw, transfer, Race Lab |
-| Account holder | `rahul` | `LedgerRahul#2026` | LL-1003, the victim for "move another user's money" |
+| Account holder | `priya` | `LedgerPriya#2026` | own accounts LL-1001 (Salary), LL-1002 (Savings): withdraw, transfer, Race Lab. Personal details verified |
+| Account holder | `rahul` | `LedgerRahul#2026` | LL-1003, the victim for "move another user's money". Personal details waiting for an administrator to check |
 | Account holder | `acme` | `LedgerAcme#2026` | LL-1004 (a vendor) |
 | **Main** administrator | `admin` | `LedgerAdmin#2026` | everything an administrator does, and the only one who creates administrators or removes their access |
 | Auditor (read-only) | `auditor` | `LedgerAudit#2026` | everything read-only: proof, journal, flags, duplicates, evidence export |
@@ -45,6 +45,17 @@ The first administrator (`admin`) is the **main administrator**, the top of auth
 
 PostgreSQL enforces the same rules (`LL013`–`LL016`): one main administrator, set once and never moved; administrators created only by the main administrator, on the record; the main administrator can never be deactivated; an administrator's access changes only with the main administrator's signed entry. The proof checks the whole history against them. An existing database keeps its history when upgraded: `migrate` makes its first active administrator the main one and records that switch as a signed `MAIN_ADMIN` entry.
 
+### Personal details
+
+Every user has a **My details** page (holders in the menu, staff by clicking their name) for the basic details a bank keeps: date of birth, mobile, email, address, occupation and an optional nominee. No ID numbers are collected.
+
+* **Only the person** changes their details. Every change is a new version that waits to be checked again.
+* **Any administrator except that person** checks them on the Users page and verifies that exact version, or sends it back with a note saying what to correct.
+* **Only the person and administrators** see the details. Auditors see only whether they are verified.
+* **The details never enter the journal.** The journal is permanent and signed, and personal details must stay correctable, so it records only who changed or checked which version and which fields changed, never a value.
+
+PostgreSQL enforces the same rules (`LL017`), and a 15th proof check replays who changed and checked every version.
+
 ## Roles and what each may do
 
 | | admin | holder | auditor |
@@ -58,6 +69,9 @@ PostgreSQL enforces the same rules (`LL013`–`LL016`): one main administrator, 
 | Create holders and auditors, remove or restore their access | ✓ | – | – |
 | Create administrators, remove or restore an administrator's access | main admin only | – | – |
 | Approve or decline auditor requests from sign-up | ✓ | – | sees them |
+| See and change your own personal details | ✓ | ✓ | ✓ |
+| See other people's personal details | ✓ | – | status only |
+| Verify or send back personal details (never your own) | ✓ | – | – |
 | Proof, reconciliation, journal, flags, duplicates, evidence export | ✓ | – | ✓ |
 
 Administrators cannot withdraw from or transfer out of customer accounts. Every role decision is made by the server on every request, and every refused attempt is journaled on the targeted account's statement. Full per-endpoint table: [docs/API.md](docs/API.md).
@@ -85,10 +99,10 @@ After pulling an update, run `python -m app.cli migrate` again: it upgrades an e
 ## Prove it
 
 ```bash
-python -m pytest                          # 146 tests against real PostgreSQL, ~30 s
-python tools/mutation_check.py            # remove each lock/check, prove a test fails (~15 min)
-python tools/attack.py --url http://localhost:8000      # 15 attacks, two workers are fine
-python -m app.cli verify                  # replay the whole journal: 14 checks
+python -m pytest                          # 158 tests against real PostgreSQL, ~30 s
+python tools/mutation_check.py            # remove each lock/check, prove a test fails (~20 min)
+python tools/attack.py --url http://localhost:8000      # 16 attacks, two workers are fine
+python -m app.cli verify                  # replay the whole journal: 15 checks
 python -m app.cli export evidence.json && python tools/verify_bundle.py evidence.json --public-key <key from /api/public-key>
 ```
 
@@ -110,7 +124,7 @@ One money request is **one transaction**: claim the key, lock the customer rows 
 
 ## Documents
 
-* [THREATS.md](THREATS.md): 89 threats, each with its defence, test, mutation and status, plus the risks we accepted and why.
+* [THREATS.md](THREATS.md): 98 threats, each with its defence, test, mutation and status, plus the risks we accepted and why.
 * [PROMPTS.md](PROMPTS.md): how AI was used and where it was wrong.
 * [docs/WRITEUP.md](docs/WRITEUP.md): what we built, what we did not, our integrity and concurrency model, what is unfinished.
 * [docs/API.md](docs/API.md): every endpoint, who may call it, what it does to the money.
@@ -126,11 +140,13 @@ Python 3.13 · FastAPI · PostgreSQL 16 (psycopg 3, raw SQL so the locking is vi
 
 ```
 app/schema.sql            every money rule PostgreSQL enforces
-app/migrations/           schema upgrades on top of it (002: auditor requests, role guards; 003: the main administrator)
+app/migrations/           schema upgrades on top of it (002: auditor requests, role guards; 003: the main administrator;
+                          004: personal details)
 app/ledger/engine.py      every rupee moves through here
 app/ledger/journal.py     the only writer of journal rows and postings (hash chain + signatures)
 app/ledger/idempotency.py exactly-once
-app/ledger/proof.py       14-check replay of the whole journal; evidence export
+app/ledger/proof.py       15-check replay of the whole journal; evidence export
+app/ledger/details.py     personal details: saved by the person, checked by another administrator
 app/sentinel/             risk scoring and LLM notes (cannot import money code)
 app/api/                  HTTP routes, auth, validation
 static/                   web UI
