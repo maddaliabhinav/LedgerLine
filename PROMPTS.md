@@ -114,7 +114,7 @@ that first added the files. Later entries link the exact fix commit.
 * **What was wrong:** The auditor's menu had never linked to the People page, since the first build. The README has said since 8 Nov that auditors "see" auditor requests, which are on that page too. Both claims were true only for someone who typed `#/users` into the address bar. Every API test passed, because the API was right.
 * **How it was caught:** The browser walkthrough for the new feature signed in as the auditor and checked that the menu has a way to the People page. It did not.
 * **What we did instead:** Added Users to the auditor's menu, and checked the auditor's view in screenshots on desktop and phone: statuses shown, no details, no buttons.
-* **Fixed in:** _(commit link to be added after the push)_
+* **Fixed in:** [106d9f5](https://github.com/maddaliabhinav/LedgerLine/commit/106d9f5381e8689861496778a6d38956b0931a1a)
 
 ---
 
