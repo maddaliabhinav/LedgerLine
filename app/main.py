@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import __version__, db
-from .api import routes_accounts, routes_admin, routes_audit, routes_auth, routes_money
+from .api import routes_accounts, routes_admin, routes_audit, routes_auth, routes_details, routes_money
 from .cli import SCHEMA_VERSION
 from .config import get_settings
 from .errors import LedgerError
@@ -116,7 +116,7 @@ async def unexpected_error(request: Request, exc: Exception):
 
 
 for router in (routes_auth.router, routes_accounts.router, routes_money.router, routes_audit.router,
-               routes_admin.router):
+               routes_admin.router, routes_details.router):
     app.include_router(router)
 
 
