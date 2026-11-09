@@ -213,6 +213,7 @@ input.amount { font-variation-settings: "wdth" 115; font-size: 20px; font-weight
 .details-actions { display: grid; gap: 12px; margin: 16px 0; }
 .details-actions > .btn { justify-self: start; }
 .details-view { margin-left: 8px; }
+.panel.narrow { max-width: 460px; }
 
 /* ---------- passbook table ---------- */
 .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }

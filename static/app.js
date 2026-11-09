@@ -228,6 +228,7 @@ const ROUTES = {
   flags: { roles: ["admin", "auditor"], render: pageFlags },
   duplicates: { roles: ["admin", "auditor"], render: pageDuplicates },
   details: { roles: ["holder", "admin", "auditor"], render: pageMyDetails },
+  password: { roles: ["holder", "admin", "auditor"], render: pageChangePassword },
 };
 
 function renderShell(active) {
@@ -957,7 +958,8 @@ function detailsStatusLine(v, own) {
 }
 
 async function pageMyDetails(main) {
-  const wrap = page(main, "My details", "The basic details a bank keeps about you. No ID numbers.");
+  const wrap = page(main, "My details", "The basic details a bank keeps about you. No ID numbers.",
+    h("a", { class: "btn secondary small", href: "#/password" }, "Change password"));
   const r = await api("GET", "/api/me/details");
   if (!r.ok) { wrap.append(h("p", {}, errorText(r))); return; }
   const v = r.data, c = v.choices, d = v.details || {};
@@ -1013,6 +1015,45 @@ async function pageMyDetails(main) {
     h("p", { class: "muted form-note" }, "Only you can change these. Any change goes back to an administrator to check. Your details are shown only to you and to administrators, and they are never written into the permanent journal: it records only that they changed, and who checked them."),
     h("button", { class: "btn", type: "submit" }, v.status === "none" ? "Save and send for checking" : "Save changes"));
   wrap.append(status, h("div", { class: "page-head" }), form);
+}
+
+async function pageChangePassword(main) {
+  const wrap = page(main, "Change password", "You need your current password. Changing it signs you out on every other device; you stay signed in here.");
+  const box = (id, autocomplete, label, hint) => {
+    const input = h("input", { id, type: "password", autocomplete, required: true, maxlength: 256 });
+    const error = h("p", { class: "field-error", role: "alert" });
+    return { input, error, el: h("div", { class: "field" }, h("label", { for: id }, label), input, hint ? h("p", { class: "hint" }, hint) : null, error) };
+  };
+  const current = box("pw-current", "current-password", "Current password");
+  const fresh = box("pw-new", "new-password", "New password", "At least 10 characters. Not the one you have now.");
+  const again = box("pw-again", "new-password", "Re-enter new password");
+  const formError = h("p", { class: "form-error", role: "alert" });
+  const fieldFor = { current_password: current, new_password: fresh, confirm_password: again };
+  const submit = h("button", { class: "btn", type: "submit" }, "Change password");
+  wrap.append(h("form", { class: "panel narrow", novalidate: true, onsubmit: async (e) => {
+    e.preventDefault();
+    [current, fresh, again].forEach((b) => set(b.error)); set(formError);
+    if (!current.input.value) { set(current.error, "Enter your current password."); current.input.focus(); return; }
+    if (fresh.input.value.length < 10) { set(fresh.error, "Use at least 10 characters."); fresh.input.focus(); return; }
+    if (fresh.input.value !== again.input.value) { set(again.error, "The two new passwords are not the same."); again.input.focus(); return; }
+    submit.disabled = true;
+    const r = await api("POST", "/api/me/password", { current_password: current.input.value, new_password: fresh.input.value, confirm_password: again.input.value });
+    submit.disabled = false;
+    if (r.ok) {
+      state.token = r.data.access_token; state.user = r.data.user;              // this session continues
+      store.set("token", state.token); store.set("user", state.user);
+      toast("Password changed. You were signed out everywhere else.");
+      location.hash = "#/details";
+      return;
+    }
+    const code = r.data && r.data.error && r.data.error.code;
+    if (code === "WRONG_PASSWORD") { set(current.error, "That is not your current password."); current.input.select(); return; }
+    if (code === "SAME_PASSWORD") { set(fresh.error, "Choose a new password, not the one you have now."); fresh.input.select(); return; }
+    const list = (r.data && r.data.error && r.data.error.fields) || [];
+    list.forEach((f) => { if (fieldFor[f.field]) set(fieldFor[f.field].error, f.message); });
+    if (!list.some((f) => fieldFor[f.field])) set(formError, errorText(r));
+  } }, current.el, fresh.el, again.el, formError, submit));
+  current.input.focus();
 }
 
 function detailsQueue(waiting) {
@@ -1172,7 +1213,7 @@ async function pageProof(main) {
 /* ------------------------------------------------------------------ journal */
 async function pageJournal(main) {
   const wrap = page(main, "Journal", "Everything that happened, in order. Each entry's hash includes the one before it.");
-  const kind = h("select", { id: "j-kind" }, ["", "DEPOSIT", "WITHDRAWAL", "TRANSFER", "HOLD", "HOLD_APPROVED", "HOLD_REJECTED", "REVERSAL", "ACCOUNT_OPENED", "ACCOUNT_STATUS", "OVERDRAFT_LIMIT", "USER_CREATED", "USER_STATUS", "ACCESS_DECISION", "MAIN_ADMIN", "AI_NOTE", "GENESIS"]
+  const kind = h("select", { id: "j-kind" }, ["", "DEPOSIT", "WITHDRAWAL", "TRANSFER", "HOLD", "HOLD_APPROVED", "HOLD_REJECTED", "REVERSAL", "ACCOUNT_OPENED", "ACCOUNT_STATUS", "OVERDRAFT_LIMIT", "USER_CREATED", "USER_STATUS", "ACCESS_DECISION", "MAIN_ADMIN", "DETAILS_SUBMITTED", "DETAILS_VERIFIED", "DETAILS_RETURNED", "PASSWORD_CHANGED", "AI_NOTE", "GENESIS"]
     .map((k) => h("option", { value: k }, k ? k.replaceAll("_", " ").toLowerCase() : "all kinds")));
   const status = h("select", { id: "j-status" }, [["", "any outcome"], ["posted", "posted"], ["refused", "refused"], ["info", "records"]].map(([v, l]) => h("option", { value: v }, l)));
   const acct = h("input", { id: "j-acct", placeholder: "LL-1001" });
