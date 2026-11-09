@@ -14,7 +14,7 @@ import psycopg
 from .. import db, hooks
 from ..errors import Conflict, Forbidden, NotFound, ValidationFailed
 from ..money import MAX_OVERDRAFT_PAISE
-from ..security import MIN_PASSWORD_LENGTH, ROLES, hash_password
+from ..security import MIN_PASSWORD_LENGTH, ROLES, hash_password, verify_password
 from ..signing import iso_utc
 from . import accounts
 from .journal import append_entry
@@ -213,6 +213,32 @@ def access_request_view(row: dict, decider: dict | None = None) -> dict:
             "status": row["status"], "requested_at": iso_utc(row["requested_at"]),
             "decided_at": iso_utc(row["decided_at"]) if row["decided_at"] else None,
             "decided_by": decider, "note": row["decision_note"], "decision_seq": row["decision_seq"]}
+
+
+def change_password(user_id: int, current: str, new: str) -> dict:
+    """A person changes their own password, proving they know the current one.
+
+    Every session of theirs ends (the token version moves on), so a stolen session
+    dies with the old password; the caller gets a fresh token. The change is on the
+    record as PASSWORD_CHANGED (who and when, never the password or its hash), and
+    the database refuses a password change that is not (LL018)."""
+    if len(new) < MIN_PASSWORD_LENGTH:
+        raise ValidationFailed(f"the new password needs at least {MIN_PASSWORD_LENGTH} characters")
+    with db.connection() as conn, conn.transaction():
+        cur = conn.cursor()
+        cur.execute("SELECT id, username, password_hash FROM users WHERE id = %s FOR UPDATE", (user_id,))
+        user = cur.fetchone()
+        if user is None or not verify_password(current, user["password_hash"]):
+            raise Forbidden("your current password is not right", code="WRONG_PASSWORD")
+        if verify_password(new, user["password_hash"]):
+            raise ValidationFailed("choose a new password, not the one you have now", code="SAME_PASSWORD")
+        cur.execute("UPDATE users SET password_hash = %s, token_version = token_version + 1 WHERE id = %s "
+                    "RETURNING id, username, display_name, role, is_main_admin, token_version",
+                    (hash_password(new), user_id))
+        updated = cur.fetchone()
+        append_entry(cur, kind="PASSWORD_CHANGED", status="info", actor_id=user_id,
+                     details={"user_id": user_id, "username": user["username"]})
+    return updated
 
 
 def set_user_active(actor_id: int, username: str, active: bool) -> dict:

@@ -97,13 +97,13 @@ class LoginThrottle:
             q.popleft()
         return q
 
-    def check(self, ip: str, username: str) -> None:
+    def check(self, ip: str, username: str, what: str = "sign-in attempts") -> None:
         settings = get_settings()
         now = time.monotonic()
         with self._lock:
             for key in (f"ip:{ip}", f"pair:{ip}:{username}"):
                 if len(self._prune(key, now, settings.login_window_seconds)) >= settings.login_max_failures:
-                    raise TooManyRequests("too many failed sign-in attempts; wait a few minutes",
+                    raise TooManyRequests(f"too many failed {what}; wait a few minutes",
                                           headers={"Retry-After": str(settings.login_window_seconds)})
 
     def fail(self, ip: str, username: str) -> None:

@@ -8,7 +8,7 @@ import unicodedata
 from datetime import date
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, model_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 from ..ledger.accounts import is_customer_no, normalise_account_no
 from ..ledger.details import OCCUPATIONS, RELATIONS, STATES
@@ -240,3 +240,17 @@ class DetailsDecisionIn(Strict):
 
 class DetailsReturnIn(DetailsDecisionIn):
     note: Annotated[str, BeforeValidator(lambda v: _plain(v, "note", 200))]
+
+
+class PasswordChangeIn(Strict):
+    """Change your own password: the current one, the new one, and the new one again."""
+    current_password: str = Field(min_length=1, max_length=256)
+    new_password: str = Field(min_length=10, max_length=256)
+    confirm_password: str = Field(max_length=256)
+
+    @field_validator("confirm_password")
+    @classmethod
+    def _typed_twice(cls, value: str, info: ValidationInfo) -> str:
+        if "new_password" in info.data and value != info.data["new_password"]:
+            raise ValueError("the two new passwords are not the same")
+        return value
