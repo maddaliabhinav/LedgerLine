@@ -12,7 +12,7 @@ import re
 import psycopg
 
 from .. import db, hooks
-from ..errors import Conflict, NotFound, ValidationFailed
+from ..errors import Conflict, Forbidden, NotFound, ValidationFailed
 from ..money import MAX_OVERDRAFT_PAISE
 from ..security import MIN_PASSWORD_LENGTH, ROLES, hash_password
 from ..signing import iso_utc
@@ -92,25 +92,50 @@ def register_holder(username: str, display_name: str, password: str) -> tuple[di
     return user, acct
 
 
+def _is_main_admin(cur, user_id: int) -> bool:
+    cur.execute("SELECT is_main_admin FROM users WHERE id = %s", (user_id,))
+    row = cur.fetchone()
+    return bool(row and row["is_main_admin"])
+
+
 def create_user(actor_id: int | None, username: str, display_name: str, role: str, password: str) -> dict:
+    """Creates a user on the record. Administrators come only from the main
+    administrator; the main administrator itself is the one administrator made
+    from the server's own command line (actor None), when there is none yet.
+    The database enforces the same (LL014, one main administrator)."""
     if role not in ROLES:
         raise ValidationFailed(f"role must be one of {', '.join(ROLES)}")
     username, display_name, password_hash = _new_user_fields(username, display_name, password)
     with db.connection() as conn, conn.transaction():
         cur = conn.cursor()
+        main_admin = False
+        if role == "admin":
+            if actor_id is None:
+                cur.execute("SELECT 1 FROM users WHERE is_main_admin")
+                if cur.fetchone() is not None:
+                    raise Conflict("there is already a main administrator; new administrators are created by them")
+                main_admin = True
+            else:
+                creator_is_main = _is_main_admin(cur, actor_id)
+                if not creator_is_main:
+                    raise Forbidden("only the main administrator can create administrators", code="MAIN_ADMIN_ONLY")
         _claim_username(cur, username)
         try:
             with conn.transaction():
                 cur.execute(
-                    "INSERT INTO users (username, display_name, role, password_hash) VALUES (%s, %s, %s, %s) "
-                    "RETURNING id, username, display_name, role, is_active, created_at",
-                    (username, display_name, role, password_hash))
+                    "INSERT INTO users (username, display_name, role, password_hash, is_main_admin) "
+                    "VALUES (%s, %s, %s, %s, %s) "
+                    "RETURNING id, username, display_name, role, is_active, is_main_admin, created_at",
+                    (username, display_name, role, password_hash, main_admin))
         except psycopg.errors.UniqueViolation as exc:
+            if exc.diag.constraint_name == "users_one_main_admin":
+                raise Conflict("there is already a main administrator") from exc
             raise Conflict(f"username {username} is taken") from exc
         user = cur.fetchone()
-        append_entry(cur, kind="USER_CREATED", status="info", actor_id=actor_id,
-                     details={"user_id": user["id"], "username": username, "role": role,
-                              "display_name": display_name})
+        details = {"user_id": user["id"], "username": username, "role": role, "display_name": display_name}
+        if main_admin:
+            details["main_admin"] = True
+        append_entry(cur, kind="USER_CREATED", status="info", actor_id=actor_id, details=details)
     return user
 
 
@@ -191,14 +216,25 @@ def access_request_view(row: dict, decider: dict | None = None) -> dict:
 
 
 def set_user_active(actor_id: int, username: str, active: bool) -> dict:
+    """Removes or restores someone's access. Nothing is deleted: the ledger keeps
+    who did what forever. Any administrator manages holders and auditors; only
+    the main administrator manages administrators; nobody can remove the main
+    administrator (database: LL015, LL016)."""
     with db.connection() as conn, conn.transaction():
         cur = conn.cursor()
-        cur.execute("SELECT id, is_active FROM users WHERE username = %s FOR UPDATE", (username,))
+        cur.execute("SELECT id, role, is_active, is_main_admin FROM users WHERE username = %s FOR UPDATE",
+                    (username,))
         user = cur.fetchone()
         if user is None:
             raise NotFound(f"user {username} not found")
+        if user["is_main_admin"] and not active:
+            raise Forbidden("the main administrator's access cannot be removed", code="MAIN_ADMIN_PROTECTED")
         if user["id"] == actor_id and not active:
             raise Conflict("you cannot deactivate yourself")
+        actor_is_main = _is_main_admin(cur, actor_id)
+        if user["role"] == "admin" and not actor_is_main:
+            raise Forbidden("only the main administrator can remove or restore an administrator's access",
+                            code="MAIN_ADMIN_ONLY")
         if user["is_active"] == active:
             raise Conflict(f"user {username} is already {'active' if active else 'inactive'}")
         # Bumping token_version revokes every token issued to this user.
@@ -206,7 +242,7 @@ def set_user_active(actor_id: int, username: str, active: bool) -> dict:
                     "RETURNING id, username, role, is_active", (active, user["id"]))
         updated = cur.fetchone()
         append_entry(cur, kind="USER_STATUS", status="info", actor_id=actor_id,
-                     details={"user_id": user["id"], "username": username, "active": active})
+                     details={"user_id": user["id"], "username": username, "role": user["role"], "active": active})
     return updated
 
 

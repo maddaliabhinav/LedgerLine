@@ -21,12 +21,12 @@ RequestId = Path(gt=0, le=9_223_372_036_854_775_807)
 @router.get("/users")
 def list_users(user: CurrentUser = Depends(require_roles("admin", "auditor"))):
     with db.read_transaction() as cur:
-        cur.execute("""SELECT u.id, u.username, u.display_name, u.role, u.is_active, u.created_at,
+        cur.execute("""SELECT u.id, u.username, u.display_name, u.role, u.is_active, u.is_main_admin, u.created_at,
                               count(a.id) AS accounts
                          FROM users u LEFT JOIN accounts a ON a.owner_id = u.id
                         GROUP BY u.id ORDER BY u.id""")
         return {"users": [{"username": r["username"], "name": r["display_name"], "role": r["role"],
-                           "active": r["is_active"], "accounts": r["accounts"],
+                           "main_admin": r["is_main_admin"], "active": r["is_active"], "accounts": r["accounts"],
                            "created_at": iso_utc(r["created_at"])} for r in cur.fetchall()]}
 
 
