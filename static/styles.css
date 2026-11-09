@@ -68,11 +68,8 @@ p { margin: 0; max-width: 72ch; }
   max-width: 1180px; margin: 0 auto; padding: 10px 20px;
   display: flex; align-items: center; gap: 18px;
 }
-.wordmark {
-  font-weight: 750; font-size: 19px; letter-spacing: 0.01em;
-  font-variation-settings: "wdth" 125; color: var(--ink); text-decoration: none; white-space: nowrap;
-}
-.wordmark span { color: var(--note); }
+.brand { display: inline-flex; align-items: center; flex: none; border-radius: 6px; }
+.brand img { display: block; height: 30px; width: auto; }
 .nav { display: flex; gap: 2px; overflow-x: auto; flex: 1; scrollbar-width: none; }
 .nav a {
   color: var(--ink-2); text-decoration: none; padding: 8px 10px; border-radius: 8px; white-space: nowrap;
@@ -139,7 +136,8 @@ input.amount { font-variation-settings: "wdth" 115; font-size: 20px; font-weight
   display: flex; flex-direction: column; justify-content: space-between; gap: 32px;
   border-right: 1px solid var(--line);
 }
-.login-hero .wordmark { font-size: 24px; }
+.login-hero .brand { align-self: flex-start; }
+.login-hero .brand img.hero-logo { height: auto; width: min(420px, 100%); }
 .login-hero h1 { font-size: clamp(34px, 4.6vw, 58px); font-variation-settings: "wdth" 118; font-weight: 700; max-width: 12ch; line-height: 1.02; }
 .login-hero .lede { font-size: 17px; color: var(--ink-2); max-width: 46ch; margin-top: 16px; }
 .hero-seal { display: flex; align-items: center; gap: 18px; }
@@ -325,6 +323,8 @@ pre.json { font-family: var(--mono); font-size: 11.5px; background: var(--paper)
   .proof-top { grid-template-columns: 1fr; justify-items: start; }
   .proof-top svg { width: 160px; height: 160px; }
   .topbar-inner { flex-wrap: wrap; padding: 10px 16px; }
+  .brand img { height: 26px; }
+  .login-hero .brand img.hero-logo { width: min(320px, 100%); }
   .nav { order: 3; flex-basis: 100%; }
   .page { padding: 20px 16px 48px; }
   .kv { grid-template-columns: 1fr; gap: 2px; }

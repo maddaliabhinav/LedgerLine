@@ -133,6 +133,11 @@ def health():
 if STATIC.is_dir():
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
+    @app.get("/favicon.ico", include_in_schema=False)
+    def favicon():
+        # Browsers ask for /favicon.ico on pages that name no icon (an API response opened in a tab).
+        return FileResponse(STATIC / "favicon.ico", media_type="image/x-icon")
+
     @app.get("/", include_in_schema=False)
     def index():
         return FileResponse(STATIC / "index.html")

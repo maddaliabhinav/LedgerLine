@@ -190,5 +190,7 @@ def test_security_headers_are_set(server):
     assert r.headers["cache-control"] == "no-cache"
     r = httpx.get(f"{server}/static/app.js")
     assert r.headers["cache-control"] == "no-cache"
+    r = httpx.get(f"{server}/favicon.ico")
+    assert r.status_code == 200 and r.headers["content-type"] == "image/x-icon"
     r = httpx.get(f"{server}/api/health")
     assert r.headers["cache-control"] == "no-store"

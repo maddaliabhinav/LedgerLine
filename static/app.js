@@ -234,7 +234,8 @@ function renderShell(active) {
   bar.classList.remove("hidden");
   const sealBtn = h("button", { class: "seal-mini", title: "Ledger proof", onclick: () => { location.hash = state.user.role === "holder" ? "#/accounts" : "#/proof"; } });
   set(bar, h("div", { class: "topbar-inner" },
-    h("a", { class: "wordmark", href: HOME[state.user.role] }, "Ledger", h("span", {}, "Line")),
+    h("a", { class: "brand", href: HOME[state.user.role] },
+      h("img", { src: "/static/img/logo.png", alt: "LedgerLine", width: 581, height: 128 })),
     h("nav", { class: "nav", "aria-label": "Main" },
       NAV[state.user.role].map(([href, label]) => h("a", { href, "aria-current": href === "#/" + active ? "page" : null }, label))),
     h("div", { class: "who" },
@@ -395,7 +396,8 @@ async function pageLogin() {
   const sealBox = h("div", { class: "hero-seal" }, h("p", {}, "Reading the ledger…"));
   set($("#app"), h("div", { class: "login" },
     h("section", { class: "login-hero" },
-      h("a", { class: "wordmark", href: "#/" }, "Ledger", h("span", {}, "Line")),
+      h("a", { class: "brand", href: "#/" },
+        h("img", { class: "hero-logo", src: "/static/img/logo-full.png", alt: "LedgerLine: secure transactions, auditable ledger, real-time", width: 1200, height: 263 })),
       h("div", {},
         h("h1", {}, "Move money. Prove every move."),
         h("p", { class: "lede" }, "Balances the database itself enforces, requests that pay exactly once however often they arrive, and a signed journal anyone can check.")),
