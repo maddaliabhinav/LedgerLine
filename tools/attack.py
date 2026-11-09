@@ -9,7 +9,8 @@ drained), then fires concurrent overdraws, replay storms, key reuse, theft,
 minting, malformed amounts, forged tokens, edit attempts, deadlock bait,
 sign-ups that try to become staff, an administrator who tries to take over
 from the main administrator, people reaching for someone else's personal
-details, and finally asks the auditor's proof whether the books still balance.
+details, a stolen session trying to change a password, and finally asks the
+auditor's proof whether the books still balance.
 Exit code 0 = every attack was stopped.
 """
 
@@ -246,6 +247,25 @@ def main() -> int:
     record("read someone's personal details, check your own, find them in the journal", ok,
            f"save own -> {saved}; holder reads -> {by_holder}; auditor reads -> {by_auditor}; "
            f"verify own -> {own_check}; values in the journal: {leaked or 'none'}")
+
+    # 16. A stolen session (a copy of someone's token) tries to change their password
+    #     without knowing the current one. Then the owner changes it, which ends the
+    #     thief's session. (Guessing the current password is throttled like sign-in;
+    #     the test suite checks that, so this script does not lock its own address out.)
+    owner = Client(args.url, newcomer, "intruder-pass-123")
+    thief = Client(args.url, newcomer, "intruder-pass-123")          # the same account, another session
+
+    def change(client: Client, current: str, new: str = "a-new-passphrase-123") -> httpx.Response:
+        return client.post("/api/me/password", {"current_password": current, "new_password": new,
+                                                 "confirm_password": new}, key=None)
+    blind = change(thief, "no-idea-what-it-is")
+    changed = change(owner, "intruder-pass-123")
+    thief_after = thief.get("/api/me")
+    ok = (code(blind) == "403 WRONG_PASSWORD" and changed.status_code == 200
+          and code(thief_after) == "401 SESSION_REVOKED")
+    record("change someone's password with a stolen session", ok,
+           f"without the current password -> {code(blind)}; owner changes it -> {changed.status_code}; "
+           f"thief's session -> {code(thief_after)}")
 
     end = auditor.get("/api/audit/proof").json()
     failing = [c["title"] for c in end["checks"] if not c["ok"]]

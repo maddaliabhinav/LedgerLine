@@ -47,6 +47,7 @@ ACCESS_SQL = "app/migrations/002_access_requests.sql"
 MAIN_SQL = "app/migrations/003_main_admin.sql"
 DETAILS = "app/ledger/details.py"
 DETAILS_SQL = "app/migrations/004_personal_details.sql"
+PASSWORD_SQL = "app/migrations/005_password_changes.sql"
 BALANCE_CHECK = 'if amount > accounts.available(source):                    # THE balance check'
 OWNER_CHECK = 'if source["owner_id"] != actor.id:'
 DAILY_CHECK = 'if _daily_outgoing(cur, source["id"]) + amount > source["daily_limit"]:'
@@ -126,7 +127,8 @@ MUTATIONS = [
              'if user.role == "holder" and acct["owner_id"] != user.id:', "if False:"),
     Mutation("M30", "Accept negative integer amounts", "app/money.py", "if value < 0:", "if False:"),
     Mutation("M31", "Stop throttling password guesses", "app/security.py",
-             'raise TooManyRequests("too many failed sign-in attempts; wait a few minutes",', 'print("throttle off",'),
+             "if len(self._prune(key, now, settings.login_window_seconds)) >= settings.login_max_failures:",
+             "if False:"),
     # --- proof and AI guardrails ------------------------------------------------------
     Mutation("M32", "Proof stops recomputing hashes", "app/ledger/proof.py",
              'if recomputed != row["hash"]:\n            checks["chain"].fail(f"#{seq}: content does not match its hash',
@@ -220,6 +222,21 @@ MUTATIONS = [
     Mutation("M70", "Let personal details be deleted", DETAILS_SQL,
              "CREATE TRIGGER personal_details_no_delete BEFORE DELETE ON personal_details\n"
              "    FOR EACH ROW EXECUTE FUNCTION forbid_mutation();\n", ""),
+    # --- changing your own password ------------------------------------------------------
+    Mutation("M71", "Change a password without knowing the current one", ADMIN_OPS,
+             'if user is None or not verify_password(current, user["password_hash"]):', "if user is None:"),
+    Mutation("M72", "Keep other sessions alive after a password change", ADMIN_OPS,
+             "UPDATE users SET password_hash = %s, token_version = token_version + 1 WHERE id = %s ",
+             "UPDATE users SET password_hash = %s WHERE id = %s "),
+    Mutation("M73", "Stop counting wrong current passwords (no throttle)", "app/api/routes_auth.py",
+             '        if exc.code == "WRONG_PASSWORD":\n            login_throttle.fail(ip, user.username)\n',
+             ""),
+    Mutation("M74", "Accept the current password as the new one", ADMIN_OPS,
+             'if verify_password(new, user["password_hash"]):', "if False:"),
+    Mutation("M75", "Do not compare the re-entered new password", "app/api/schemas.py",
+             'if "new_password" in info.data and value != info.data["new_password"]:', "if False:"),
+    Mutation("M76", "Database accepts a password change off the record (LL018)", PASSWORD_SQL,
+             "AND j.actor_id = NEW.id) THEN", "OR TRUE) THEN"),
 ]
 
 
