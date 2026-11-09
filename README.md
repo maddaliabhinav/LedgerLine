@@ -11,7 +11,7 @@ LedgerLine moves money between accounts so that:
 What sets it apart:
 
 * **The database is the backstop.** CHECK constraints and triggers mean even a buggy app cannot overdraw, create money or edit history.
-* **Mutation-tested tests.** `tools/mutation_check.py` removes each of 47 locks and checks; the test suite fails every time ([report](docs/MUTATION_REPORT.md)).
+* **Mutation-tested tests.** `tools/mutation_check.py` removes each of 59 locks and checks; the test suite fails every time ([report](docs/MUTATION_REPORT.md)).
 * **Red-team script.** `tools/attack.py` runs the judges' attacks against any URL and prints a scorecard.
 * **AI that flags, people who decide.** Sentinel holds risky payments in suspense with explained reasons. An optional LLM writes reviewer notes that never see user text and whose every number is checked. A test proves the AI cannot reach money-moving code.
 * **Race Lab** in the UI fires real concurrent requests from your browser.
@@ -23,7 +23,7 @@ What sets it apart:
 | Account holder | `priya` | `LedgerPriya#2026` | own accounts LL-1001 (Salary), LL-1002 (Savings): withdraw, transfer, Race Lab |
 | Account holder | `rahul` | `LedgerRahul#2026` | LL-1003, the victim for "move another user's money" |
 | Account holder | `acme` | `LedgerAcme#2026` | LL-1004 (a vendor) |
-| Administrator | `admin` | `LedgerAdmin#2026` | deposits, open/freeze accounts, overdrafts, users, approve/reject held payments, reversals |
+| **Main** administrator | `admin` | `LedgerAdmin#2026` | everything an administrator does, and the only one who creates administrators or removes their access |
 | Auditor (read-only) | `auditor` | `LedgerAudit#2026` | everything read-only: proof, journal, flags, duplicates, evidence export |
 | Auditor, **waiting for approval** | `meera` | `LedgerMeera#2026` | nothing yet: signing in says the request is waiting. Approve it as `admin` (Users page), then sign in |
 
@@ -32,7 +32,18 @@ Anyone can also **create a user** from the home page and pick the account type:
 * **Account holder**: ready straight away, with one account at ₹0.00.
 * **Auditor**: only a *request*. Nobody can sign in with it until an administrator approves it on the Users page, and the approval or decline is a signed journal entry.
 
-Administrator access is never self-service. PostgreSQL enforces this as well: it refuses a request for admin access, a decision not made by an administrator on the record, a second decision, a change of role, and any admin or auditor not created on the record by another administrator.
+Administrator access is never self-service. PostgreSQL enforces this as well: it refuses a request for admin access, a decision not made by an administrator on the record, a second decision, a change of role, and any auditor not created on the record by another administrator.
+
+### The main administrator
+
+The first administrator (`admin`) is the **main administrator**, the top of authority. Signed in as `admin`, open **Users**, pick the role *admin* and create a second administrator.
+
+* **Any administrator** does all of the daily work: deposits, approving or rejecting held payments, reversals, auditor requests, accounts, and creating holders and auditors or removing their access. Nothing waits for the main administrator to be available.
+* **Only the main administrator** creates administrators, and removes or restores an administrator's access.
+* **Nobody can remove the main administrator**, not another administrator and not the main administrator by mistake.
+* **"Remove" never deletes.** The person is signed out at once and cannot sign in, and everything they did stays in the journal under their name. Their access can be restored.
+
+PostgreSQL enforces the same rules (`LL013`–`LL016`): one main administrator, set once and never moved; administrators created only by the main administrator, on the record; the main administrator can never be deactivated; an administrator's access changes only with the main administrator's signed entry. The proof checks the whole history against them. An existing database keeps its history when upgraded: `migrate` makes its first active administrator the main one and records that switch as a signed `MAIN_ADMIN` entry.
 
 ## Roles and what each may do
 
@@ -43,7 +54,9 @@ Administrator access is never self-service. PostgreSQL enforces this as well: it
 | Withdraw / transfer | – | own accounts only | – |
 | Approve / reject held payments | ✓ | – | – |
 | Reverse a posted entry (new entry, reason required) | ✓ | – | – |
-| Open, freeze, close accounts; set overdraft (≤ ₹50,000); manage users | ✓ | – | – |
+| Open, freeze, close accounts; set overdraft (≤ ₹50,000) | ✓ | – | – |
+| Create holders and auditors, remove or restore their access | ✓ | – | – |
+| Create administrators, remove or restore an administrator's access | main admin only | – | – |
 | Approve or decline auditor requests from sign-up | ✓ | – | sees them |
 | Proof, reconciliation, journal, flags, duplicates, evidence export | ✓ | – | ✓ |
 
@@ -72,9 +85,9 @@ After pulling an update, run `python -m app.cli migrate` again: it upgrades an e
 ## Prove it
 
 ```bash
-python -m pytest                          # 132 tests against real PostgreSQL, ~25 s
-python tools/mutation_check.py            # remove each lock/check, prove a test fails (~10 min)
-python tools/attack.py --url http://localhost:8000
+python -m pytest                          # 146 tests against real PostgreSQL, ~30 s
+python tools/mutation_check.py            # remove each lock/check, prove a test fails (~15 min)
+python tools/attack.py --url http://localhost:8000      # 15 attacks, two workers are fine
 python -m app.cli verify                  # replay the whole journal: 14 checks
 python -m app.cli export evidence.json && python tools/verify_bundle.py evidence.json --public-key <key from /api/public-key>
 ```
@@ -97,7 +110,7 @@ One money request is **one transaction**: claim the key, lock the customer rows 
 
 ## Documents
 
-* [THREATS.md](THREATS.md): 82 threats, each with its defence, test, mutation and status, plus the risks we accepted and why.
+* [THREATS.md](THREATS.md): 89 threats, each with its defence, test, mutation and status, plus the risks we accepted and why.
 * [PROMPTS.md](PROMPTS.md): how AI was used and where it was wrong.
 * [docs/WRITEUP.md](docs/WRITEUP.md): what we built, what we did not, our integrity and concurrency model, what is unfinished.
 * [docs/API.md](docs/API.md): every endpoint, who may call it, what it does to the money.
@@ -113,7 +126,7 @@ Python 3.13 · FastAPI · PostgreSQL 16 (psycopg 3, raw SQL so the locking is vi
 
 ```
 app/schema.sql            every money rule PostgreSQL enforces
-app/migrations/           schema upgrades on top of it (002: auditor requests, role guards)
+app/migrations/           schema upgrades on top of it (002: auditor requests, role guards; 003: the main administrator)
 app/ledger/engine.py      every rupee moves through here
 app/ledger/journal.py     the only writer of journal rows and postings (hash chain + signatures)
 app/ledger/idempotency.py exactly-once

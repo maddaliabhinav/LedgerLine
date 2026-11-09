@@ -89,6 +89,24 @@ that first added the files. Later entries link the exact fix commit.
 * **What we did instead:** `migrate` now upgrades an existing database in place (it applies only the migrations it lacks, in one transaction, and is safe to re-run). The server checks the schema version at startup and refuses to start on an old one, with the fix in the message: `Run: python -m app.cli migrate`. Checked both ways: refused on version 1, then upgraded, started, and all 14 proof checks passed over the old history.
 * **Fixed in:** [3b5290d](https://github.com/maddaliabhinav/LedgerLine/commit/3b5290da77e0bb59173a1215b27dad0a1d9eaa1c)
 
+### 9. 2026-11-09 — A mutation that kept testing a rule nothing runs any more (testing)
+
+* **Asked:** Let the first administrator create more administrators, so approvals and deposits do not wait for one person. Only that main administrator may add administrators or remove their access, and nobody may remove the main administrator.
+* **It produced:** Migration `003_main_admin.sql`, which redefines the `users_guard` trigger function to add the main-administrator rules, plus the API, UI and proof changes and their tests. It left `tools/mutation_check.py` as it was.
+* **What was wrong:** Mutation M45 ("make user roles editable") deletes the role check from `users_guard` in migration **002**. Once 003 replaces that function, 002's copy never runs, so the mutation deleted nothing that runs. The role guard itself still worked, but our evidence that a test would notice its removal was gone, and `docs/MUTATION_REPORT.md` still said 47/47.
+* **How it was caught:** Before trusting the old report, we re-ran the mutation aimed at the function the migration replaces, and M45 came back `SURVIVED`. (M28 broke too, but loudly: a line it edits in `deps.py` had changed, and the harness refuses to run a mutation whose pattern is missing. A pattern that still exists in replaced code gives no such warning.)
+* **What we did instead:** M45 now edits the live copy in migration 003, with a comment saying why. We added M48–M59 for the new rules and re-ran the whole harness: 59/59 caught (`docs/MUTATION_REPORT.md`). Our rule now: when a migration replaces a database function, its mutations move with it.
+* **Fixed in:** _(commit link to be added after the push)_
+
+### 10. 2026-11-09 — The proof judged old history by a rule that did not exist yet (integrity)
+
+* **Asked:** The same request as entry 9.
+* **It produced:** A stricter access check in the proof: every administrator must have been created by the main administrator, or be the main administrator itself, created from the server's command line. Every test passed, because every test database is created fresh.
+* **What was wrong:** Up to version 2, any administrator could create another one. After an upgrade, an administrator that a second administrator had created last week was suddenly reported as a fault (`administrator chitra was not created by the main administrator`). If the first administrator's access had been removed earlier, the main role went to the first *active* administrator, and both of them were reported. The proof would have shown FAIL on honest data on the day of the upgrade, and the obvious "fix" would have been to weaken the check.
+* **How it was caught:** We asked the question from entry 8 again: what happens to a database that already exists? We built two version-2 databases with the previous release's code (one where a second administrator created a third, one where the first administrator's access had been removed), upgraded them with the new code and ran `python -m app.cli verify`. Both failed the access check.
+* **What we did instead:** The switch to the new rule is now on the signed record. When `migrate` upgrades a database across version 3, it appends one `MAIN_ADMIN` journal entry naming the main administrator (the database allows only one). The proof judges each administrator by the rule in force when it was created: before that entry, another administrator was enough; after it, only the main administrator. A database created at version 3 or later follows the new rule from its first entry. The proof also checks that the main-administrator flag in `users` matches the signed record, so a flag moved behind the guards is caught directly. Re-checked by hand: both test databases and our UI database (all built by the old code) upgrade, pass all 14 checks, keep the new rules (the third administrator can no longer create administrators) and verify offline with `tools/verify_bundle.py`. The rule itself has tests (`test_administrators_are_judged_by_the_rule_in_force_when_they_were_created` and two more); the upgrade run is not in the automated suite, because it needs a second database built by old code.
+* **Fixed in:** _(commit link to be added after the push)_
+
 ---
 
 ## Your entries from here

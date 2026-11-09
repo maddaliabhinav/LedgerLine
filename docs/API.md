@@ -21,7 +21,7 @@ Base URL: your deployment (for example `https://ledgerline.onrender.com`). Inter
 | `POST /api/accounts` | ✓ | – | – | none (opens at ₹0) |
 | `POST /api/accounts/{no}/freeze`, `/unfreeze`, `/close` | ✓ | – | – | none (stops movement) |
 | `POST /api/accounts/{no}/overdraft` | ✓ | – | – | none (moves the floor to −limit, max ₹50,000) |
-| `POST /api/users`, `/api/users/{u}/deactivate`, `/activate` | ✓ | – | – | none |
+| `POST /api/users`, `/api/users/{u}/deactivate`, `/activate` | ✓ holders and auditors; **administrators: main admin only** | – | – | none |
 | `GET /api/access-requests` | ✓ | – | ✓ | read |
 | `POST /api/access-requests/{id}/approve`, `/decline` | ✓ | – | – | none (creates the auditor on approval; the decision is journaled) |
 | `GET /api/accounts`, `/api/accounts/{no}`, `/statement` | all | own only | all | read |
@@ -39,7 +39,7 @@ Base URL: your deployment (for example `https://ledgerline.onrender.com`). Inter
 
 ### `POST /api/auth/login`
 Anyone. Body `{"username": "priya", "password": "…"}`.
-`200` → `{"access_token", "token_type": "bearer", "expires_in": 3600, "user": {"username", "name", "role", "permissions": [...]}}`.
+`200` → `{"access_token", "token_type": "bearer", "expires_in": 3600, "user": {"username", "name", "role", "main_admin", "permissions": [...]}}`. `main_admin` is `true` only for the main administrator.
 `401 BAD_CREDENTIALS`. `429 TOO_MANY_REQUESTS` after 10 failures in 5 minutes from one IP.
 `403 APPROVAL_PENDING` or `403 ACCESS_DECLINED` when the username belongs to an auditor request (not a user) and the password matches it: no token. A wrong password gets the usual `401`, so nobody learns a request exists without its password.
 
@@ -49,13 +49,13 @@ Anyone (public sign-up, the "Create user" tab on the home page). Body `{"usernam
 * `"holder"` → `201`: creates an **account holder** with one account named "Main account" at **₹0.00**, and signs them in. Same shape as login, plus `"account": {"account_no", "name", "balance"}`. The new user and account are journaled (`USER_CREATED`, `ACCOUNT_OPENED`, marked `"via": "self-service sign-up"`).
 * `"auditor"` → `202`: files a **request** and creates no user. No token: `{"status": "pending", "message", "request": {"id", "username", "name", "role": "auditor", "status": "pending", "requested_at", ...}}`. Signing in answers `403 APPROVAL_PENDING` until an administrator decides.
 
-`409` username taken (by a user or by a request still waiting) · `422` invalid input · `429 TOO_MANY_REQUESTS` after 10 sign-up attempts in 10 minutes from one address. Administrators are created only by an administrator (`POST /api/users`).
+`409` username taken (by a user or by a request still waiting) · `422` invalid input · `429 TOO_MANY_REQUESTS` after 10 sign-up attempts in 10 minutes from one address. Administrators are created only by the main administrator (`POST /api/users`).
 
 ### `POST /api/auth/logout`
 Any signed-in user. Revokes **all** of that user's tokens. `200 {"ok": true}`.
 
 ### `GET /api/me`
-Any signed-in user. Returns username, name, role and permissions.
+Any signed-in user. Returns username, name, role, `main_admin` and permissions (read fresh from the database; the web UI asks for it on every page load).
 
 ---
 
@@ -116,6 +116,15 @@ A **new** entry moves the money back the way it came: transfer → payee to paye
 * `POST /api/accounts/{no}/freeze` | `/unfreeze` | `/close` (admin): `{"reason": "…"}`. Closing needs a zero balance and no payments under review.
 * `POST /api/accounts/{no}/overdraft` (admin): `{"limit": "5000", "reason": "…"}`, ₹0–₹50,000. `409` if the balance is already below the new floor.
 
+## Users and administrators
+
+The first administrator is the **main administrator**. Any administrator manages holders and auditors; only the main administrator manages administrators; nobody can remove the main administrator. Nothing is ever deleted: removing access ends every session at once and keeps the history.
+
+* `GET /api/users` (admin, auditor): everyone, with `username`, `name`, `role`, `main_admin`, `active` and number of accounts.
+* `POST /api/users` (admin): `{"username", "display_name", "role": "holder" | "auditor" | "admin", "password"}` → `201`, journaled `USER_CREATED` naming who created it. `"role": "admin"` needs the main administrator: anyone else gets `403 MAIN_ADMIN_ONLY`. `409` username taken.
+* `POST /api/users/{u}/deactivate` and `/activate` (admin): removes or restores access, journaled `USER_STATUS`. `200` → `{"username", "active"}`. For an administrator's access: `403 MAIN_ADMIN_ONLY` unless you are the main administrator. For the main administrator: `403 MAIN_ADMIN_PROTECTED`, whoever asks. Your own access: `409`.
+* The database enforces the same: one main administrator, set once (`LL013`); never deactivated (`LL015`); administrators created only by the main administrator, on the record (`LL014`); an administrator's access changed only with the main administrator's signed `USER_STATUS` entry (`LL016`).
+
 ## Auditor requests (from sign-up)
 
 * `GET /api/access-requests?state=pending|decided` (admin, auditor): waiting requests oldest first, or the last 100 decisions with who decided, when, the note and the `decision_seq` journal entry. Never a password hash.
@@ -127,7 +136,7 @@ A **new** entry moves the money back the way it came: transfer → payee to paye
 
 * `GET /api/reviews?state=pending|decided|all`: held payments with Sentinel's score, reasons and features, the latest AI note, and the decision if any.
 * `POST /api/reviews/{seq}/ai-note`: asks the LLM (if configured) for a reviewer note. No money moves; the note is journaled as `AI_NOTE` with the model name. The same facts reuse the cached note.
-* `GET /api/audit/proof`: replays the whole journal and returns 14 checks (chain, signatures, head, double entry, replay, floors, stored balances, conservation, suspense, single decisions, exactly-once, refusal balances, access, backstop) plus totals. *Access* checks that every user has exactly one `USER_CREATED` entry with the role it has now, and that every auditor or admin was created by another administrator.
+* `GET /api/audit/proof`: replays the whole journal and returns 14 checks (chain, signatures, head, double entry, replay, floors, stored balances, conservation, suspense, single decisions, exactly-once, refusal balances, access, backstop) plus totals. *Access* checks that every user has exactly one `USER_CREATED` entry with the role it has now, that every auditor was created by another administrator, that the main-administrator flag matches the signed record, and that every administrator was created by the rule in force at the time (by another administrator before the upgrade's `MAIN_ADMIN` entry, by the main administrator after it).
 * `POST /api/audit/reconciliation`: the proof plus a plain-English summary (LLM if configured, template otherwise), journaled.
 * `GET /api/audit/journal?kind=&status=&account=&before_seq=&limit=`: the hash-chained journal.
 * `GET /api/audit/flags`: held payments, elevated scores, authorisation refusals, database backstops (should be empty), reversals, control changes (including auditor-access decisions), large deposits, key reuse.
@@ -148,6 +157,7 @@ A **new** entry moves the money back the way it came: transfer → payee to paye
 | 403 | `ROLE_NOT_PERMITTED`, `NOT_ACCOUNT_OWNER` | not allowed | ✓ |
 | 403 | `APPROVAL_PENDING`, `ACCESS_DECLINED` | sign-in for an auditor request that is waiting / was declined (right password only) | – |
 | 403 | `FORBIDDEN` | an admin-only or staff-only endpoint | – |
+| 403 | `MAIN_ADMIN_ONLY`, `MAIN_ADMIN_PROTECTED` | creating an administrator or changing an administrator's access needs the main administrator / nobody can remove the main administrator | the change itself is, when it happens |
 | 404 | `NOT_FOUND`, `DESTINATION_NOT_FOUND` | no such thing | dest ✓ |
 | 409 | `INSUFFICIENT_FUNDS`, `DAILY_LIMIT_EXCEEDED`, `ACCOUNT_NOT_ACTIVE`, `DESTINATION_NOT_ACTIVE`, `HOLD_ALREADY_DECIDED`, `ALREADY_REVERSED` | refused by a business rule | ✓ |
 | 409 | `INTEGRITY_BACKSTOP` | the database refused a write the app attempted (a bug signal); nothing moved | ✓ |
@@ -184,4 +194,14 @@ ADMIN=$(curl -s $URL/api/auth/login -H 'content-type: application/json' \
 curl -s $URL/api/access-requests -H "Authorization: Bearer $ADMIN"
 curl -s $URL/api/access-requests/1/approve -H "Authorization: Bearer $ADMIN" -H 'content-type: application/json' \
   -d '{"note":"confirmed with the audit firm"}'
+
+# as the main administrator: create a second administrator
+curl -s $URL/api/users -H "Authorization: Bearer $ADMIN" -H 'content-type: application/json' \
+  -d '{"username":"ravi","display_name":"Ravi Kumar","role":"admin","password":"ravi-password-1"}'
+RAVI=$(curl -s $URL/api/auth/login -H 'content-type: application/json' \
+  -d '{"username":"ravi","password":"ravi-password-1"}' | python -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')
+# ravi does the daily work, but cannot make administrators (403 MAIN_ADMIN_ONLY) or remove the main one (403 MAIN_ADMIN_PROTECTED)
+curl -s $URL/api/users -H "Authorization: Bearer $RAVI" -H 'content-type: application/json' \
+  -d '{"username":"ravi2","display_name":"Another Admin","role":"admin","password":"ravi-password-2"}'
+curl -s -X POST $URL/api/users/admin/deactivate -H "Authorization: Bearer $RAVI"
 ```

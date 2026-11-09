@@ -34,7 +34,17 @@ Version 2 (`app/migrations/002_access_requests.sql`) adds the rules for **who ma
 | Roles never change | `users_guard` (`LL013`) | `UPDATE users SET role = 'admin'` is refused. A new role means a new user, on the record. |
 | Every user on the record | `users_created_on_record`, deferred to COMMIT (`LL014`) | Each new user needs a `USER_CREATED` entry with the same role, in the same transaction; an auditor or admin only from another administrator (or the server's own command line, for the seed). |
 
-`python -m app.cli migrate` applies it to a new database, and upgrades an existing one in place.
+Version 3 (`app/migrations/003_main_admin.sql`) adds **the main administrator**: any administrator does the daily work, but only the main administrator decides who is an administrator.
+
+| Rule | Where | What it means |
+|---|---|---|
+| One main administrator, set once | `users.is_main_admin`, unique index `users_one_main_admin`, CHECK `main_admin_is_an_admin`, `users_guard` (`LL013`) | Only the first administrator (from the command line) gets the flag; it can never move. |
+| The main administrator stays | `users_guard` (`LL015`) | `UPDATE users SET is_active = false` on the main administrator is refused, whoever runs it. |
+| Administrators only from the main administrator | `users_created_on_record` v3 (`LL014`) | A new administrator's `USER_CREATED` entry must be written by the main administrator. |
+| An administrator's access, only by the main administrator | `users_admin_access`, deferred to COMMIT (`LL016`) | Removing or restoring an administrator needs a signed `USER_STATUS` entry by the main administrator, for that user and that state. |
+| The switch is on the record | `journal_one_main_admin_switch` (unique index) + `migrate` | Upgrading an existing database appends one signed `MAIN_ADMIN` entry naming the main administrator. Administrators created before it were made under the old rule, and the proof judges them by it. |
+
+`python -m app.cli migrate` applies them to a new database, and upgrades an existing one in place.
 
 System accounts: `SYS-EXTERNAL` (the outside world; the only account allowed below zero) and `SYS-SUSPENSE` (payments held for review).
 
@@ -180,7 +190,7 @@ External money and held money are real accounts, so conservation is one checkabl
 No. Sentinel only reads and scores. Above the threshold, money waits in suspense for a person. An architecture test fails if the AI package ever imports money code. The LLM writes words only: no memos in, numbers checked out.
 
 **"Can anyone make themselves an admin from the Create user page?"**
-No. `SignUpIn.role` accepts only `holder` or `auditor`, so `admin` gets a 422. A holder sign-up inserts the role `'holder'` as a constant. An auditor sign-up creates a *request*, and only an administrator can turn it into a user. Underneath, PostgreSQL refuses a request for admin (`CHECK`) and, at commit, any admin or auditor not created on the record by another administrator (`LL014`). Tests: `tests/test_signup.py`, `tests/test_access_requests.py`; mutations M36, M42, M46.
+No. `SignUpIn.role` accepts only `holder` or `auditor`, so `admin` gets a 422. A holder sign-up inserts the role `'holder'` as a constant. An auditor sign-up creates a *request*, and only an administrator can turn it into a user. Underneath, PostgreSQL refuses a request for admin (`CHECK`) and, at commit, any auditor not created on the record by another administrator and any administrator not created by the main administrator (`LL014`). Tests: `tests/test_signup.py`, `tests/test_access_requests.py`, `tests/test_main_admin.py`; mutations M36, M42, M46, M53.
 
 **"What if two admins approve the same request at the same moment?"**
 `decide_access_request` locks the request row with `SELECT … FOR UPDATE` before checking it is pending. The second admin waits for the first to commit, then sees `approved` and gets `409 ALREADY_DECIDED`: one auditor, one decision entry. The test forces this with `hooks.race_window(after_request_check=0.3)`; delete `FOR UPDATE` and it fails (M40). Even past the app, the database keeps decisions final (`LL012`, M44).
@@ -188,12 +198,19 @@ No. `SignUpIn.role` accepts only `holder` or `auditor`, so `admin` gets a 422. A
 **"Could an auditor approve someone, or approve themselves?"**
 The endpoint needs the admin role, re-read from the database on every request. A pending requester has no account at all, so there is nothing to approve *with*. And the database refuses any decision whose journal entry was not written by an administrator (`LL012`, M38 and M43).
 
+**"Why a main administrator? Can a second admin take over?"**
+Approvals should not wait for one person, so every administrator can deposit, approve, reverse and decide auditor requests. Deciding *who is an administrator* is different: it is how an insider would build a backdoor. So only the main administrator creates administrators or removes their access (`403 MAIN_ADMIN_ONLY` for anyone else), and nobody can remove the main administrator (`403 MAIN_ADMIN_PROTECTED`). PostgreSQL enforces the same (`LL013`–`LL016`), and the proof compares the flag with the signed record. Tests: `tests/test_main_admin.py`; attack 14 in `tools/attack.py`; mutations M48–M59.
+
+**"What happens to an existing database when you upgrade?"**
+`migrate` makes the first *active* administrator the main one and appends a signed `MAIN_ADMIN` entry saying so. Administrators that another administrator created before that entry were legal at the time, so the proof judges each one by the rule in force when it was created. Without that, the proof would have failed on honest history: PROMPTS.md entry 10.
+
 **Likely live-change requests, and where to make them:**
 
 * *"Change the overdraft maximum to ₹1 lakh."* Edit `MAX_OVERDRAFT_PAISE` in `money.py` and the `overdraft_limit BETWEEN 0 AND 5000000` CHECK in `schema.sql` (it is enforced in both places). Reset and migrate.
 * *"Add a per-transaction limit of ₹50,000 for holders."* In `engine.transfer`, after the lock: `if amount > 50_000 * 100: return _refuse(ctx, attempt, "LIMIT_EXCEEDED")`, add `"LIMIT_EXCEEDED": (409, "...")` to `REFUSALS`, and add a test.
 * *"Make the hold threshold 70."* `HOLD_THRESHOLD` in `sentinel/risk.py`.
 * *"Let the holder cancel their own held payment."* Reuse `decide_hold(..., "reject")` with a holder check: `actor.id == hold["actor_id"]`.
+* *"Let a second administrator also create administrators."* Don't do it quietly: it is a rule in three places. `admin_ops.create_user` (`MAIN_ADMIN_ONLY`), `users_created_on_record` in a new migration (`LL014`) and the proof's `admin_creation_problem`. Record the switch the way `migrate` records `MAIN_ADMIN`, so old history is judged by the old rule.
 
 ## Exercises to make it yours (and real PROMPTS.md entries)
 
