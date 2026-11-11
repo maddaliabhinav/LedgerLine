@@ -17,6 +17,11 @@ snapshot and checks, independently of the cached balances:
   decisions    no held payment decided twice; no entry reversed twice
   exactly-once no idempotency key appears on two journal entries
   refusals     each refused attempt's recorded balance equals the replayed balance
+  access       every user has exactly one USER_CREATED entry, with the role it has now;
+               auditors were created by an administrator (or the server's command
+               line), administrators by the one main administrator (who alone comes
+               from the command line); no access request decided twice, and every
+               approval created its auditor
   backstop     how many times the database had to refuse a write (should be 0)
 """
 
@@ -86,6 +91,10 @@ def run_proof(cur: Cursor) -> dict:
         ("decisions", "No held payment decided twice, no entry reversed twice"),
         ("exactly_once", "No idempotency key moved money twice"),
         ("refusals", "Refused attempts recorded the true balance at that moment"),
+        ("access", "Every user is on the record with their role; staff access only from an administrator, "
+                   "administrators only from the main administrator"),
+        ("details", "Personal details changed only by their owner and checked only by another administrator, "
+                    "on the record"),
         ("backstop", "Database backstop never had to fire"),
     ]}
 
@@ -106,6 +115,11 @@ def run_proof(cur: Cursor) -> dict:
     external_in = external_out = 0
     last_row = None
     entries = 0
+    user_created: dict[int, list[dict]] = defaultdict(list)
+    access_decisions: dict = {}
+    born_at = 1                      # schema version the database was created at (from GENESIS)
+    details_record: list[dict] = []  # DETAILS_* entries: who changed or checked which version (never the values)
+    switches: list[dict] = []        # MAIN_ADMIN: an upgraded database's switch to the main-administrator rule
 
     for row, postings in iter_entries(cur):
         entries += 1
@@ -186,6 +200,21 @@ def run_proof(cur: Cursor) -> dict:
         if row["idempotency_key"]:
             keys[(row["actor_id"], row["idempotency_key"])] += 1
 
+        # --- who may sign in ---
+        if row["kind"] == "USER_CREATED":
+            user_created[int(row["details"].get("user_id") or 0)].append(row)
+        elif row["kind"] == "ACCESS_DECISION":
+            request_id = row["details"].get("request_id")
+            if request_id in access_decisions:
+                checks["access"].fail(f"access request {request_id} decided twice (again by #{seq})")
+            access_decisions[request_id] = row
+        elif row["kind"] == "MAIN_ADMIN":
+            switches.append(row)
+        elif row["kind"] in ("DETAILS_SUBMITTED", "DETAILS_VERIFIED", "DETAILS_RETURNED"):
+            details_record.append(row)
+        elif row["kind"] == "GENESIS":
+            born_at = int(row["details"].get("schema_version") or 1)
+
     # --- head ---
     cur.execute("SELECT last_seq, last_hash FROM ledger_head WHERE id = 1")
     head = cur.fetchone()
@@ -228,6 +257,8 @@ def run_proof(cur: Cursor) -> dict:
         f"{sum(1 for _ in keys)} keyed requests; duplicates answered from storage: {replays.get('replayed', 0)}; "
         f"key reuse refused: {replays.get('key_reused_with_different_request', 0)}; "
         f"in-flight retries: {replays.get('in_flight_timeout', 0)}")
+    _check_access(cur, checks["access"], user_created, access_decisions, born_at, switches)
+    _check_details(cur, checks["details"], details_record)
     checks["chain"].summary = f"{entries} entries, #1 .. #{last_row['seq'] if last_row else 0}"
     checks["signatures"].summary = f"key {signer.key_id}"
     checks["backstop"].summary = "the application's own checks stopped every bad request"
@@ -251,6 +282,150 @@ def run_proof(cur: Cursor) -> dict:
         "counts": {"by_kind": dict(kinds), "by_status": dict(statuses), "replays": replays},
         "checks": views,
     }
+
+
+MAIN_ADMIN_SINCE = 3      # the schema version from which only the main administrator manages administrators
+
+
+def admin_creation_problem(entry: dict, user_id: int, creator: dict | None, main_id: int | None,
+                           rule_from: int | None) -> str | None:
+    """What is wrong with how this administrator was created, judged by the rule
+    in force at that entry; None if nothing. Up to schema version 2 any
+    administrator could create another. From the switch on (`rule_from`, the
+    seq of an upgraded database's MAIN_ADMIN entry, or 0 for a database created
+    at version 3 or later) only the main administrator can, and only the main
+    administrator itself comes from the server's command line."""
+    if rule_from is None or entry["seq"] <= rule_from:
+        if entry["actor_id"] is not None and (creator is None or creator["role"] != "admin"
+                                              or creator["id"] == user_id):
+            return "was not created by another administrator"
+        return None
+    if entry["actor_id"] is None:
+        return None if user_id == main_id else "came from the command line but is not the main administrator"
+    if entry["actor_id"] != main_id or entry["actor_id"] == user_id:
+        return "was not created by the main administrator"
+    return None
+
+
+def _check_access(cur: Cursor, check: _Check, user_created: dict[int, list[dict]], decisions: dict,
+                  born_at: int, switches: list[dict]) -> None:
+    """The users table must agree with the signed record of how each user came to be."""
+    cur.execute("SELECT id, username, role, is_main_admin FROM users")
+    users = {row["id"]: row for row in cur.fetchall()}
+
+    def name(user_id: int | None) -> str:
+        return "nobody" if user_id is None else users[user_id]["username"] if user_id in users else f"user {user_id}"
+
+    # Who the signed record names as the main administrator, and from which entry
+    # that rule applies: from the start for a database created at version 3 or
+    # later (the command line created the main administrator, "main_admin" in its
+    # USER_CREATED entry), from the MAIN_ADMIN entry for an upgraded one.
+    if born_at >= MAIN_ADMIN_SINCE:
+        rule_from = 0
+    elif switches:
+        rule_from = switches[0]["seq"]
+    else:
+        rule_from = None
+        check.fail(f"upgraded to version {MAIN_ADMIN_SINCE} without the signed MAIN_ADMIN entry that migrate writes")
+    if len(switches) > 1:
+        check.fail(f"MAIN_ADMIN recorded {len(switches)} times (#{', #'.join(str(e['seq']) for e in switches)})")
+    named = {e["details"].get("user_id") for e in switches} | {
+        user_id for user_id, made in user_created.items()
+        if any(e["actor_id"] is None and e["details"].get("main_admin") for e in made)}
+    named.discard(None)
+    if len(named) > 1:
+        check.fail("the signed record names more than one main administrator: "
+                   + ", ".join(name(n) for n in sorted(named)))
+    main_id = min(named) if named else None
+    marked = sorted(user_id for user_id, user in users.items() if user["is_main_admin"])
+    if marked != ([main_id] if main_id is not None else []):
+        check.fail(f"{', '.join(name(m) for m in marked) or 'nobody'} is marked as the main administrator, "
+                   f"but the signed record names {name(main_id)}")
+
+    for user_id, user in users.items():
+        made = user_created.get(user_id, [])
+        if len(made) != 1:
+            check.fail(f"user {user['username']} has {len(made)} USER_CREATED entries, expected exactly 1")
+            continue
+        entry = made[0]
+        if entry["details"].get("role") != user["role"]:
+            check.fail(f"user {user['username']} is {user['role']} but was created as "
+                       f"{entry['details'].get('role')} (#{entry['seq']})")
+        creator = users.get(entry["actor_id"]) if entry["actor_id"] is not None else None
+        if user["role"] == "auditor" and entry["actor_id"] is not None:
+            if creator is None or creator["role"] != "admin" or creator["id"] == user_id:
+                check.fail(f"auditor {user['username']} was not created by an administrator (#{entry['seq']})")
+        if user["role"] == "admin":
+            problem = admin_creation_problem(entry, user_id, creator, main_id, rule_from)
+            if problem:
+                check.fail(f"administrator {user['username']} {problem} (#{entry['seq']})")
+    for user_id, made in user_created.items():
+        if user_id not in users:
+            check.fail(f"#{made[0]['seq']} records user {user_id}, who does not exist")
+    created_from = {e["ref_seq"]: e for made in user_created.values() for e in made if e["ref_seq"]}
+    approved = [d for d in decisions.values() if d["details"].get("decision") == "approved"]
+    for decision in approved:
+        made = created_from.get(decision["seq"])
+        if made is None or made["details"].get("role") != decision["details"].get("role") \
+                or made["details"].get("username") != decision["details"].get("username"):
+            check.fail(f"approval #{decision['seq']} did not create the auditor it approved")
+    staff = sum(1 for user in users.values() if user["role"] != "holder")
+    since = f" (since the upgrade, #{rule_from})" if rule_from else ""
+    check.summary = (f"{len(users)} users, {staff} with staff access, main administrator: "
+                     f"{name(main_id) if main_id is not None else 'none'}{since}; "
+                     f"auditor requests approved: {len(approved)}, declined: {len(decisions) - len(approved)}")
+
+
+def _check_details(cur: Cursor, check: _Check, record: list[dict]) -> None:
+    """Replay who changed and who checked each version of everyone's personal
+    details, and compare the result with the stored details. Every version must
+    come from its owner, one after another; every decision from an administrator
+    who is not the owner, once, on the current version."""
+    cur.execute("SELECT id, username, role FROM users")
+    users = {row["id"]: row for row in cur.fetchall()}
+    cur.execute("SELECT user_id, version, status, decided_by FROM personal_details")
+    stored = {row["user_id"]: row for row in cur.fetchall()}
+
+    def name(user_id: int) -> str:
+        return users[user_id]["username"] if user_id in users else f"user {user_id}"
+
+    replayed: dict[int, dict] = {}
+    for entry in record:
+        user_id, version = int(entry["details"].get("user_id") or 0), entry["details"].get("version")
+        now = replayed.get(user_id)
+        if entry["kind"] == "DETAILS_SUBMITTED":
+            expected = now["version"] + 1 if now else 1
+            if entry["actor_id"] != user_id:
+                check.fail(f"#{entry['seq']}: the details of {name(user_id)} were changed by someone else")
+            if version != expected:
+                check.fail(f"#{entry['seq']}: the details of {name(user_id)} jumped to version {version}, "
+                           f"expected {expected}")
+            replayed[user_id] = {"version": version, "status": "waiting", "decided_by": None}
+            continue
+        actor = users.get(entry["actor_id"])
+        if actor is None or actor["role"] != "admin" or actor["id"] == user_id:
+            check.fail(f"#{entry['seq']}: the details of {name(user_id)} were checked by someone who may not")
+        if now is None or version != now["version"]:
+            check.fail(f"#{entry['seq']}: a decision on version {version} of the details of {name(user_id)}, "
+                       "which is not their current version")
+        elif now["status"] != "waiting":
+            check.fail(f"#{entry['seq']}: version {version} of the details of {name(user_id)} was decided twice")
+        else:
+            now.update(status="verified" if entry["kind"] == "DETAILS_VERIFIED" else "returned",
+                       decided_by=entry["actor_id"])
+    for user_id in sorted(set(replayed) | set(stored)):
+        row, expected = stored.get(user_id), replayed.get(user_id)
+        if row is None:
+            check.fail(f"{name(user_id)} has details on the record but none stored")
+        elif expected is None:
+            check.fail(f"{name(user_id)} has stored details that are not on the record")
+        elif (row["version"], row["status"], row["decided_by"]) != \
+                (expected["version"], expected["status"], expected["decided_by"]):
+            check.fail(f"the details of {name(user_id)} say version {row['version']} {row['status']}, "
+                       f"the record says version {expected['version']} {expected['status']}")
+    by_status = Counter(row["status"] for row in stored.values())
+    check.summary = (f"{len(stored)} people gave details: {by_status['verified']} verified, "
+                     f"{by_status['waiting']} waiting, {by_status['returned']} sent back")
 
 
 def verify_single(cur: Cursor, seq: int) -> dict | None:

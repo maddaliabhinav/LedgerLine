@@ -28,6 +28,7 @@ class CurrentUser:
     username: str
     display_name: str
     role: str
+    is_main_admin: bool = False
 
     @property
     def actor(self) -> Actor:
@@ -43,12 +44,12 @@ def current_user(creds: HTTPAuthorizationCredentials | None = Depends(bearer)) -
     except (TypeError, ValueError) as exc:
         raise Unauthorized("invalid access token", code="TOKEN_INVALID") from exc
     with db.read_transaction() as cur:
-        cur.execute("SELECT id, username, display_name, role, is_active, token_version FROM users WHERE id = %s",
-                    (user_id,))
+        cur.execute("SELECT id, username, display_name, role, is_active, is_main_admin, token_version "
+                    "FROM users WHERE id = %s", (user_id,))
         user = cur.fetchone()
     if user is None or not user["is_active"] or user["token_version"] != claims["tv"]:
         raise Unauthorized("this session is no longer valid; sign in again", code="SESSION_REVOKED")
-    return CurrentUser(user["id"], user["username"], user["display_name"], user["role"])
+    return CurrentUser(user["id"], user["username"], user["display_name"], user["role"], user["is_main_admin"])
 
 
 def require_roles(*roles: str):

@@ -14,7 +14,8 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import __version__, db
-from .api import routes_accounts, routes_admin, routes_audit, routes_auth, routes_money
+from .api import routes_accounts, routes_admin, routes_audit, routes_auth, routes_details, routes_money
+from .cli import SCHEMA_VERSION
 from .config import get_settings
 from .errors import LedgerError
 
@@ -26,13 +27,28 @@ CSP = ("default-src 'self'; script-src 'self'; style-src 'self' https://fonts.go
        "frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'")
 
 
+def _require_current_schema() -> None:
+    """Refuse to serve a database older than this code (for example right after
+    pulling an update), with the fix in the message instead of a 500 later."""
+    with db.connection() as conn:
+        exists = conn.execute("SELECT to_regclass('ledgerline.schema_version') IS NOT NULL AS e").fetchone()["e"]
+        version = conn.execute("SELECT max(version) AS v FROM ledgerline.schema_version").fetchone()["v"] \
+            if exists else 0
+    if version < SCHEMA_VERSION:
+        raise RuntimeError(f"the database schema is at version {version} but this code needs version "
+                           f"{SCHEMA_VERSION}. Run:  python -m app.cli migrate   then start the server again.")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     get_settings()          # fail fast on bad production config
     db.init_pool()
-    yield
-    db.close_pool()
+    try:
+        _require_current_schema()
+        yield
+    finally:
+        db.close_pool()     # also when startup is refused, so no pool threads are left behind
 
 
 app = FastAPI(
@@ -56,6 +72,10 @@ async def security_headers(request: Request, call_next):
     path = request.url.path
     if path.startswith("/api"):
         response.headers["Cache-Control"] = "no-store"
+    elif path == "/" or path.startswith("/static/"):
+        # Revalidate the UI on every load (a cheap 304 when unchanged), so a new
+        # deploy or an edit shows on a normal refresh, never a stale cached copy.
+        response.headers["Cache-Control"] = "no-cache"
     if not path.startswith(("/docs", "/redoc", "/openapi.json")):
         response.headers["Content-Security-Policy"] = CSP
     return response
@@ -96,7 +116,7 @@ async def unexpected_error(request: Request, exc: Exception):
 
 
 for router in (routes_auth.router, routes_accounts.router, routes_money.router, routes_audit.router,
-               routes_admin.router):
+               routes_admin.router, routes_details.router):
     app.include_router(router)
 
 
@@ -112,6 +132,11 @@ def health():
 
 if STATIC.is_dir():
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    def favicon():
+        # Browsers ask for /favicon.ico on pages that name no icon (an API response opened in a tab).
+        return FileResponse(STATIC / "favicon.ico", media_type="image/x-icon")
 
     @app.get("/", include_in_schema=False)
     def index():

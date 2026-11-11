@@ -32,7 +32,7 @@ os.environ.pop("ANTHROPIC_API_KEY", None)               # tests never call a rea
 import pytest  # noqa: E402
 
 from app import cli, db  # noqa: E402
-from app.security import login_throttle  # noqa: E402
+from app.security import login_throttle, signup_throttle  # noqa: E402
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -47,6 +47,7 @@ def database():
 @pytest.fixture(autouse=True)
 def _fresh_throttle():
     login_throttle.reset()
+    signup_throttle.reset()
     yield
 
 
