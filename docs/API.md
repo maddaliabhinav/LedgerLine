@@ -10,8 +10,13 @@ Base URL: your deployment (for example `https://ledgerline.onrender.com`). Inter
 
 ## Who can do what
 
+Every endpoint the server has is in this table. The server decides on every request, from the role it reads from the database.
+
 | Endpoint | admin | holder | auditor | Effect on money |
 |---|:-:|:-:|:-:|---|
+| `POST /api/auth/login` | public | public | public | none (returns a token; failed attempts are throttled) |
+| `POST /api/auth/logout` | ✓ | ✓ | ✓ | none (ends every session of the caller) |
+| `GET /api/me` | ✓ | ✓ | ✓ | read (your own role and permissions) |
 | `POST /api/deposits` | ✓ any active customer account | – | – | `SYS-EXTERNAL` → account |
 | `POST /api/withdrawals` | – | ✓ own accounts | – | account → `SYS-EXTERNAL` (or → `SYS-SUSPENSE` if held) |
 | `POST /api/transfers` | – | ✓ from own accounts | – | source → destination (or → `SYS-SUSPENSE` if held) |
@@ -21,6 +26,7 @@ Base URL: your deployment (for example `https://ledgerline.onrender.com`). Inter
 | `POST /api/accounts` | ✓ | – | – | none (opens at ₹0) |
 | `POST /api/accounts/{no}/freeze`, `/unfreeze`, `/close` | ✓ | – | – | none (stops movement) |
 | `POST /api/accounts/{no}/overdraft` | ✓ | – | – | none (moves the floor to −limit, max ₹50,000) |
+| `GET /api/users` | ✓ | – | ✓ | read (who has access, and only the *status* of their personal details) |
 | `POST /api/users`, `/api/users/{u}/deactivate`, `/activate` | ✓ holders and auditors; **administrators: main admin only** | – | – | none |
 | `GET /api/me/details`, `PUT /api/me/details` (your own personal details) | ✓ | ✓ | ✓ | none |
 | `POST /api/me/password` (your own password) | ✓ | ✓ | ✓ | none |
@@ -185,13 +191,13 @@ The basic details a bank keeps: date of birth, mobile, email, address, occupatio
 | 403 | `FORBIDDEN` | an admin-only or staff-only endpoint | – |
 | 403 | `OWN_DETAILS` | nobody verifies or sends back their own personal details | – |
 | 403 | `WRONG_PASSWORD` | the current password given to change it is wrong (you stay signed in) | – |
-| 409 | `DETAILS_CHANGED` | the personal details changed since you opened them; check the new version | – |
 | 403 | `MAIN_ADMIN_ONLY`, `MAIN_ADMIN_PROTECTED` | creating an administrator or changing an administrator's access needs the main administrator / nobody can remove the main administrator | the change itself is, when it happens |
 | 404 | `NOT_FOUND`, `DESTINATION_NOT_FOUND` | no such thing | dest ✓ |
 | 409 | `INSUFFICIENT_FUNDS`, `DAILY_LIMIT_EXCEEDED`, `ACCOUNT_NOT_ACTIVE`, `DESTINATION_NOT_ACTIVE`, `HOLD_ALREADY_DECIDED`, `ALREADY_REVERSED` | refused by a business rule | ✓ |
 | 409 | `INTEGRITY_BACKSTOP` | the database refused a write the app attempted (a bug signal); nothing moved | ✓ |
 | 409 | `IDEMPOTENCY_KEY_REUSED`, `REQUEST_IN_PROGRESS` | key misuse / first request still running; nothing moved | in the duplicates log |
 | 409 | `ALREADY_DECIDED`, `CONFLICT` | auditor request or version of personal details already decided / username taken, or another state conflict | – |
+| 409 | `DETAILS_CHANGED` | the personal details changed since you opened them; check the new version | – |
 | 422 | `VALIDATION_FAILED`, `SAME_ACCOUNT`, `DESTINATION_NOT_ALLOWED`, `NOT_REVERSIBLE`, `SAME_PASSWORD` | malformed or impossible | `SAME_ACCOUNT`, `DESTINATION_NOT_ALLOWED`, `NOT_REVERSIBLE` ✓ |
 | 428 | `IDEMPOTENCY_KEY_REQUIRED` | send an Idempotency-Key | – |
 | 429 | `TOO_MANY_REQUESTS` | sign-in, password change or sign-up throttled | – |

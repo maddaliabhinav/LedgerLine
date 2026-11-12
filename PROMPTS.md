@@ -1,18 +1,30 @@
-# PROMPTS.md — how AI was used, and where it was wrong
+# PROMPTS.md — every prompt we gave the AI, and where it was wrong
 
-LedgerLine was built with an AI coding assistant (Claude). This file records
-what we asked for, what came back, what was specifically wrong with it, how
-we caught it, and what we did instead. Entries are dated and added as work
-happens, not written at the end.
+LedgerLine was built with an AI coding assistant (Claude), in one long build
+conversation from 6 to 12 November 2026. The assistant wrote the code, ran it
+against a real PostgreSQL and copied the files to our laptop. We ran them
+there, and committed and pushed them ourselves. This file has two parts:
+
+1. **[Where the AI was wrong](#part-1-where-the-ai-was-wrong)**: 13 dated
+   entries in the form the problem statement asks for: what we asked for,
+   what came back, what was specifically wrong with it, how we caught it, what
+   we did instead, and the commit with the fix. Entries 1 and 2 are about the
+   idempotency and concurrency logic.
+2. **[Every prompt, in order](#part-2-every-prompt-in-order)**: all 21
+   prompts we gave the AI while building LedgerLine, with what each one led
+   to and the commits it went into.
 
 **Rule for this file:** only real events. If an entry says the AI was right,
-it says how that was checked.
+it says how that was checked. Entries are added as the work happens, not
+written at the end.
+
+---
+
+## Part 1: where the AI was wrong
 
 Entries 1–6 come from the first build session (6 Nov 2026). Their fixes went
 into the code before the first commit, so their "fixed in" link is the commit
 that first added the files. Later entries link the exact fix commit.
-
----
 
 ### 1. 2026-11-06 — Replayed responses were not the same bytes (idempotency)
 
@@ -136,18 +148,113 @@ that first added the files. Later entries link the exact fix commit.
 
 ---
 
-## Your entries from here
+## Part 2: every prompt, in order
 
-Add an entry each time you use an AI tool this week: deploying, reviewing a
-function, writing the demo, fixing a bug a judge might find. Link the commit.
-Template:
+Every prompt we gave the AI while building LedgerLine, oldest first. Dates
+are India time.
 
-```
-### N. YYYY-MM-DD — <short title> (<area: integrity / concurrency / idempotency / auth / deploy / ui / docs>)
-* **Asked:** <the prompt, in one or two sentences>
-* **It produced:** <what came back>
-* **What was wrong:** <specific: which line, which case, what would have happened>
-* **How it was caught:** <test, review, mutation, manual attack, screenshot>
-* **What we did instead:** <the change>
-* **Fixed in:** <https://github.com/<you>/<repo>/commit/<sha>>
-```
+* **P1–P9 are summaries.** Their exact wording was not kept, so they say
+  what we asked for.
+* **P10–P21 are exact**, quoted as typed, typos included. A line break is
+  shown as " / ", and long error messages are shortened with "…".
+
+Short replies inside a task, such as our answers to the AI's questions, are
+listed with the prompt they belong to. Every commit with the AI's work in it
+is linked from one of these prompts.
+
+#### P1 · 6 Nov · The brief
+* **Asked** (summary): We shared the problem statement and asked for a complete LedgerLine in Python, good enough to win.
+* **Result:** The first version, built and checked phase by phase: the database schema that refuses to break the books; the money engine (row locks, idempotency, hash chain, signatures); sign-in, roles and the API; Sentinel; the proof and the offline verifier; the web UI with the Race Lab; tests that really race, the mutation harness and the attack script; and the documents (README, THREATS, PROMPTS, API, write-up, deployment, demo script, walkthrough). The AI ran the tests, the mutation harness and the attack script itself, and reviewed a screenshot of every page, before copying the project to our laptop.
+* **Commit:** [642ca32](https://github.com/maddaliabhinav/LedgerLine/commit/642ca32dd7be2ae325955a7ad5037f9f2ed76446) (pushed on 7 Nov). What it got wrong on the way: entries 1–6.
+
+#### P2 · 6 Nov · A broken requirements file
+* **Asked** (summary): On the laptop, `pip freeze > requirements.txt` had replaced the tested versions with another environment's packages (pandas, SQLAlchemy and others). We asked the AI to sort it out.
+* **Result:** It put the tested versions back and kept the frozen list next to the project folder as `requirements.freeze-backup.txt`.
+
+#### P3 · 7 Nov · Setting up on Windows with Python 3.14
+* **Asked** (summary): Get the project running on our Windows laptop, which had Python 3.14.
+* **Result:** The AI checked that every pinned package has a ready-made Windows wheel for Python 3.14, ran the whole test suite on Python 3.14, and compared our copy of the project with its own, file by file.
+
+#### P4 · 7 Nov · Putting it on GitHub
+* **Asked** (summary): Push the project to our GitHub repository, which already had a README created on GitHub.
+* **Result:** The first commit, then a merge with GitHub's README.
+* **Commits:** [642ca32](https://github.com/maddaliabhinav/LedgerLine/commit/642ca32dd7be2ae325955a7ad5037f9f2ed76446), [524716c](https://github.com/maddaliabhinav/LedgerLine/commit/524716c34eb5127f0caffeb489966bb18ee72f6e).
+
+#### P5 · 7 Nov · A new look, and "Create user"
+* **Asked** (summary): Re-theme the UI in midnight black, pure white and vibrant golden yellow; add "Create user" on the home page; remove the demo people list.
+* **Result:** The black-and-gold theme; "Sign in" and "Create user" tabs (a new account holder gets one ₹0 account); a sign-up limit per address; tests for sign-up.
+* **Commit:** [dd5f527](https://github.com/maddaliabhinav/LedgerLine/commit/dd5f5278127c3ff014a9ab6c6a4187fc8efad95c). What it got wrong: entry 7.
+
+#### P6 · 8 Nov · Choose "account holder" or "auditor" at sign-up
+* **Asked** (summary): On the home page, let people choose "account holder" or "auditor" when they create a user. An auditor account must wait until an administrator accepts the request.
+* **Result:** An auditor sign-up becomes a request that an administrator decides once, on the record; database guards `LL012`–`LL014`; the first schema migration; tests, mutations and attacks for the flow.
+* **Commit:** [3b5290d](https://github.com/maddaliabhinav/LedgerLine/commit/3b5290da77e0bb59173a1215b27dad0a1d9eaa1c). What it got wrong: entry 8.
+
+#### P7 · 8 Nov · A script for the presentation and the interview
+* **Asked** (summary): A script to present the project to the judges and to prepare for the interview.
+* **Result:** A shared document outside the repository, "LedgerLine — Project Walkthrough Script", written from the problem statement: a 12–15 minute walkthrough of every flow, and the questions the judges are likely to ask, with answers. Kept up to date afterwards (P17).
+
+#### P8 · 9 Nov · Our logo
+* **Asked** (summary): We shared our logo image and asked for it in the app.
+* **Result:** The logo in the top bar and on the home page, a favicon and a home-screen icon. With it, entry 8 got the link to its fix commit.
+* **Commits:** [2049fef](https://github.com/maddaliabhinav/LedgerLine/commit/2049fefa758e00b56b4f612e113585a47c6b4ab1), [2339714](https://github.com/maddaliabhinav/LedgerLine/commit/2339714039797568355654055bdd5d4fb82ea440).
+
+#### P9 · 9 Nov · A main administrator
+* **Asked** (summary): Let the first administrator create more administrators, so approvals and deposits do not wait for one person. Only that main administrator may add administrators or remove their access, nobody may remove the main administrator, and any administrator does the daily work. Update PROMPTS, THREATS and the README.
+* **Result:** Migration 003 with database guards `LL013`–`LL016`; the API, UI and proof changes; 14 tests, mutations M48–M59 and an insider attack.
+* **Commits:** [8220663](https://github.com/maddaliabhinav/LedgerLine/commit/82206635ffcca617f0ed5a33a455ddfbad039e95), [a1e2d82](https://github.com/maddaliabhinav/LedgerLine/commit/a1e2d820128596a1e15803f83536764448dda9b0), [a18435c](https://github.com/maddaliabhinav/LedgerLine/commit/a18435ccbcddefd8b572ad902f19e0bfbd41a448), [c8699bc](https://github.com/maddaliabhinav/LedgerLine/commit/c8699bc0652351abf12b844b63381332556de728), [a006025](https://github.com/maddaliabhinav/LedgerLine/commit/a0060255bee2ae0a2de516f1a00a31a72d918531), [0275e48](https://github.com/maddaliabhinav/LedgerLine/commit/0275e485e93c50a617d2a1b105f77bc2b4b136ae). What it got wrong: entries 9 and 10.
+
+#### P10 · 9 Nov · The server refused to start
+* **Asked** (exact, shortened): `RuntimeError: the database schema is at version 2 but this code needs version 3…`
+* **Result:** Run `python -m app.cli migrate` once: it upgrades the database in place, keeps its history, and records the switch to the main-administrator rule as a signed entry.
+
+#### P11 · 9 Nov · Committing the main administrator
+* **Asked** (exact): "done / i want to push this into git"
+* **Result:** Step by step: a new branch `feature/main-admin`, five commits (code, proof, UI, tests, docs), then a push.
+
+#### P12 · 9 Nov
+* **Asked** (exact, pasted output): "git checkout -b feature/main-admin / Switched to a new branch 'feature/main-admin'"
+* **Result:** The next step.
+
+#### P13 · 9 Nov
+* **Asked** (exact): "all the five at a time"
+* **Result:** All five commits as one block to paste.
+
+#### P14 · 9 Nov · Personal details
+* **Asked** (exact): "give the feature for the everyuser / like basic details about personal details as every bank needs"
+* **Our answers to the AI's four questions:** no ID numbers; an administrator verifies the details; no change to how money moves; only the person and administrators see them.
+* **Result:** Migration 004 (guard `LL017`); the details API; a "My details" page and a check queue for administrators; a 15th proof check; 12 tests, mutations M60–M70 and an attack.
+* **Commits:** [49db00f](https://github.com/maddaliabhinav/LedgerLine/commit/49db00f2e1baf1cffc3f6315b28325df458117b5), [5f872d9](https://github.com/maddaliabhinav/LedgerLine/commit/5f872d97cabc0b41d06a626741c8739ff54ef83f), [106d9f5](https://github.com/maddaliabhinav/LedgerLine/commit/106d9f5381e8689861496778a6d38956b0931a1a), [d7958ea](https://github.com/maddaliabhinav/LedgerLine/commit/d7958ea6bb136f50ac6261c2d889e3da56730877), [c04e53d](https://github.com/maddaliabhinav/LedgerLine/commit/c04e53d82b0377ff281bba41b637bfb42f8b1000). What it got wrong: entry 11.
+
+#### P15 · 9 Nov
+* **Asked** (exact): a pasted `git log` showing those commits pushed.
+* **Result:** Entry 11 linked to its fix commit.
+* **Commit:** [788ac5e](https://github.com/maddaliabhinav/LedgerLine/commit/788ac5e19123af64473ad2a4b12bb4a5aea5c092).
+
+#### P16 · 9 Nov · Change your own password
+* **Asked** (exact): "provide a feature for all the uses to chnage password after login / like / current / new / re eneter new"
+* **Result:** `POST /api/me/password` and a "Change password" page; every other session signed out on a change; migration 005 (guard `LL018`); tests, mutations M71–M76 and a stolen-session attack.
+* **Commits:** [1ce8030](https://github.com/maddaliabhinav/LedgerLine/commit/1ce80306fc8178c489dd082901c7333d4ef1a715), [9d922da](https://github.com/maddaliabhinav/LedgerLine/commit/9d922da4ecf803af5b2d93ff4192995658596a92), [1abcbe5](https://github.com/maddaliabhinav/LedgerLine/commit/1abcbe558e0312f6ecb4e47cc20c509aa706b7d6), [0eba443](https://github.com/maddaliabhinav/LedgerLine/commit/0eba4434284bba8a6dd38094a7be971889842089). What it got wrong: entries 12 and 13.
+
+#### P17 · 9 Nov · Bring the documents up to date
+* **Asked** (exact): "once update the readme file,prompts,threathes and all the documents realetd till now"
+* **Result:** README, THREATS, PROMPTS (links for entries 12 and 13), API, walkthrough, write-up, deployment guide, demo script and the auditor's permission wording, plus the presentation script from P7.
+* **Commit:** [3ad3797](https://github.com/maddaliabhinav/LedgerLine/commit/3ad379767882e3f7cdaad0474843ec61b1131733).
+
+#### P18 · 12 Nov · Windows blocked the server
+* **Asked** (exact, shortened): `Program 'uvicorn.exe' failed to run: An Application Control policy has blocked this file.`
+* **Result:** Windows was blocking `uvicorn.exe`, a small launcher that pip creates on each machine, not Python itself. Start the server with `python -m uvicorn app.main:app --reload`.
+
+#### P19 · 12 Nov · Windows blocked the database driver
+* **Asked** (exact, shortened): `ImportError: no pq wrapper available. … couldn't import psycopg 'binary' implementation: DLL load failed while importing pq: An Application Control policy has blocked this file. … couldn't import psycopg 'python' implementation: libpq library not found`
+* **Result:** Use psycopg's pure-Python mode with PostgreSQL's own `libpq.dll` (`PSYCOPG_IMPL=python`, PostgreSQL's `bin` folder on `PATH`), and start every tool with `python -m` ([walkthrough](docs/WALKTHROUGH.md#if-windows-blocks-a-file)).
+* **What was wrong in that answer:** it said `.venv-test/` was missing from `.gitignore`. It is there; the AI had read an out-of-date copy of the file instead of ours. Caught while preparing P20, when it compared its copies with ours before editing anything.
+
+#### P20 · 12 Nov · Check the documents against the problem statement
+* **Asked** (exact): "analyze and update the documentation according to the given problem statement / and in prompts ,mention every prompt that used to make this project"
+* **Result:** The problem statement checked point by point in the README; the attacks it names mapped to our threats and tests in THREATS.md; every endpoint in the API guide's permission table; the isolation level explained in the write-up; Windows steps that avoid blocked launchers; and this part of PROMPTS.md.
+* **Commit:** the one that adds this entry.
+
+#### P21 · 12 Nov · A branch of its own
+* **Asked** (exact): "i have used the change password name alredy"
+* **Result:** The documents go on a new branch, `feature/docs-problem-statement`, instead of the password feature's branch, and that branch is merged into `main`.

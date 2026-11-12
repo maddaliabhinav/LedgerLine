@@ -9,6 +9,22 @@ if the defence were removed. Status is one of:
 * **Detected**: cannot be prevented by the application (someone with database-owner rights), but is reliably detected by the proof and the offline verifier.
 * **Accepted**: a known gap, left open on purpose. The reason is given in [Accepted risks](#accepted-risks-what-is-still-open-and-why).
 
+## The attacks the problem statement names
+
+The brief lists what a judge will try against the deployed system. Each one is below, with the threats that cover it, the tests that force it, and the matching line of `tools/attack.py`, which runs the attacks against any URL.
+
+| The brief's attack | Threats | Tests | `attack.py` |
+|---|---|---|---|
+| Two withdrawals fired at the same instant to overdraw an account | T01, T02, T03 | `test_two_withdrawals_at_the_same_instant_cannot_overdraw`, `test_two_withdrawals_over_http_cannot_overdraw`, `test_withdrawal_and_transfer_racing_for_the_same_money` | "two Rs 600 withdrawals at once from Rs 1,000", "25 simultaneous Rs 100 transfers against Rs 400" |
+| The same transfer replayed to pay a vendor twice | T19, T20, T21, T26, T27 | `test_same_key_twice_moves_money_once_and_returns_the_same_bytes`, `test_twenty_copies_at_the_same_instant_move_money_once`, `test_retry_arriving_while_the_first_is_in_flight_gets_the_first_answer` | "same request x20 with one Idempotency-Key", "reuse a key for a bigger amount" |
+| A transfer that moves money out of an account that is not theirs | T30, T33 | `test_holder_cannot_transfer_out_of_someone_elses_account`, `test_holder_cannot_withdraw_from_someone_elses_account`, `test_moving_someone_elses_money_over_http_is_refused` | "move or read another user's money" |
+| A balance driven negative through a race | T01, T03, T04, T05, T16 | `test_concurrent_transfers_from_one_account_cannot_overdraw`, `test_overdraft_floor_holds_under_a_race`, `test_daily_limit_holds_under_a_race`, `test_database_refuses_an_overdraw_even_if_the_application_check_is_skipped` | "25 simultaneous Rs 100 transfers against Rs 400" |
+| A ledger row altered to hide a payment | T44, T45, T46, T47 | `test_journal_rows_cannot_be_updated_deleted_or_truncated`, `test_editing_a_row_is_detected_by_the_proof`, `test_rewriting_history_and_rehashing_without_the_key_is_detected` | "PUT / PATCH / DELETE a journal entry" |
+| A request that fails halfway (from the brief's first standard) | T07, T25 | `test_failure_between_debit_and_credit_leaves_no_trace`, `test_connection_killed_mid_transfer_moves_nothing` | – |
+| "We will take one lock or one check out of your code and run your tests" | all of the above | `python tools/mutation_check.py`: 76 of 76 removals make a test fail ([how](#how-we-know-the-tests-test-something)) | – |
+
+Everything else in this file is what we found beyond that list.
+
 ## What we protect, and whom we trust
 
 | Asset | Rule |

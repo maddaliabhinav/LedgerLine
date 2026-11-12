@@ -133,9 +133,11 @@ You need **Python 3.13** (python.org, tick "Add to PATH") and **PostgreSQL 16**,
 cd "C:\Abhinav's\hackathon\ledgerline"
 py -3.13 -m venv .venv
 .\.venv\Scripts\Activate.ps1          # if blocked: Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
-pip install -r requirements-dev.txt
+python -m pip install -r requirements-dev.txt
 copy .env.example .env               # then edit DATABASE_URL / TEST_DATABASE_URL if needed
 ```
+
+Never run `pip freeze > requirements.txt`: the file pins the exact versions the tests ran on, and a freeze writes whatever else happens to be installed.
 
 Database, with Docker Desktop:
 
@@ -156,7 +158,7 @@ Then:
 ```powershell
 python -m app.cli migrate            # schema + signed GENESIS entry (on an existing database: upgrades it)
 python -m app.cli seed               # demo people and accounts (prints them)
-uvicorn app.main:app --reload        # open http://localhost:8000
+python -m uvicorn app.main:app --reload   # open http://localhost:8000
 python -m pytest                     # 166 tests, about 30 s
 python tools/attack.py               # in a second terminal, while the server runs
 python tools/mutation_check.py      # about 22 minutes; proves the tests bite
@@ -167,6 +169,24 @@ Or everything in Docker: `docker compose up --build`, then open http://localhost
 After pulling an update, stop the server and run `python -m app.cli migrate` again: it upgrades your database in place and keeps its history (the server refuses to start until you do).
 
 Reset the local database: `python -m app.cli reset --yes`, then migrate and seed again. Only a freshly seeded database has the sample personal details for Priya (verified) and Rahul (waiting).
+
+### If Windows blocks a file
+
+With Smart App Control (or a company App Control policy), Windows can refuse a file with *"An Application Control policy has blocked this file"*. It is blocking one unsigned file, not Python itself.
+
+* **`uvicorn.exe`, `pip.exe`, `pytest.exe`**: small launchers that pip writes into `.venv\Scripts` on each machine. Start the tool through Python instead, as every command above does: `python -m uvicorn app.main:app --reload`, `python -m pip …`, `python -m pytest`.
+* **The database driver** (`ImportError: no pq wrapper available … DLL load failed while importing pq`): the `psycopg-binary` package brings its own copy of PostgreSQL's client library, and that copy is what Windows blocked. psycopg can use the client library that came with your PostgreSQL installation instead, through its pure-Python mode:
+
+```powershell
+& "C:\Program Files\PostgreSQL\17\bin\psql.exe" --version   # use your version's folder; if this runs, Windows allows its libpq.dll
+$env:PATH = "C:\Program Files\PostgreSQL\17\bin;" + $env:PATH
+$env:PSYCOPG_IMPL = "python"
+python -c "import psycopg; print(psycopg.__version__, psycopg.pq.__impl__)"   # the second word should be: python
+```
+
+To keep this for new terminals, open "Edit environment variables for your account", add the same `bin` folder to `Path` and a variable `PSYCOPG_IMPL` with the value `python`, then reopen the terminal. Nothing in the repository changes: Render and Docker run on Linux, where the binary package works.
+
+If Windows also blocks `pydantic_core` or `cryptography` (check with `python -c "import pydantic_core, cryptography.hazmat.bindings._rust"`), there is no pure-Python version of those. Run everything in Docker instead: `docker compose up --build`. Its database uses port 5432, so stop a local PostgreSQL service first.
 
 ---
 
