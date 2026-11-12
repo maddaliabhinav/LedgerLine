@@ -117,19 +117,3 @@ that first added the files. Later entries link the exact fix commit.
 * **Fixed in:** [106d9f5](https://github.com/maddaliabhinav/LedgerLine/commit/106d9f5381e8689861496778a6d38956b0931a1a)
 
 ---
-
-## Your entries from here
-
-Add an entry each time you use an AI tool this week: deploying, reviewing a
-function, writing the demo, fixing a bug a judge might find. Link the commit.
-Template:
-
-```
-### N. YYYY-MM-DD — <short title> (<area: integrity / concurrency / idempotency / auth / deploy / ui / docs>)
-* **Asked:** <the prompt, in one or two sentences>
-* **It produced:** <what came back>
-* **What was wrong:** <specific: which line, which case, what would have happened>
-* **How it was caught:** <test, review, mutation, manual attack, screenshot>
-* **What we did instead:** <the change>
-* **Fixed in:** <https://github.com/<you>/<repo>/commit/<sha>>
-```
