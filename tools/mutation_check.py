@@ -42,6 +42,12 @@ class Mutation:
 
 ENGINE = "app/ledger/engine.py"
 SCHEMA = "app/schema.sql"
+ADMIN_OPS = "app/ledger/admin_ops.py"
+ACCESS_SQL = "app/migrations/002_access_requests.sql"
+MAIN_SQL = "app/migrations/003_main_admin.sql"
+DETAILS = "app/ledger/details.py"
+DETAILS_SQL = "app/migrations/004_personal_details.sql"
+PASSWORD_SQL = "app/migrations/005_password_changes.sql"
 BALANCE_CHECK = 'if amount > accounts.available(source):                    # THE balance check'
 OWNER_CHECK = 'if source["owner_id"] != actor.id:'
 DAILY_CHECK = 'if _daily_outgoing(cur, source["id"]) + amount > source["daily_limit"]:'
@@ -114,13 +120,15 @@ MUTATIONS = [
              'if user is None or not user["is_active"] or user["token_version"] != claims["tv"]:',
              "if user is None:"),
     Mutation("M28", "Trust the role written inside the token", "app/api/deps.py",
-             'return CurrentUser(user["id"], user["username"], user["display_name"], user["role"])',
-             'return CurrentUser(user["id"], user["username"], user["display_name"], claims.get("role", user["role"]))'),
+             'return CurrentUser(user["id"], user["username"], user["display_name"], user["role"], user["is_main_admin"])',
+             'return CurrentUser(user["id"], user["username"], user["display_name"], claims.get("role", user["role"]),'
+             ' user["is_main_admin"])'),
     Mutation("M29", "Let holders read any statement", "app/api/routes_accounts.py",
              'if user.role == "holder" and acct["owner_id"] != user.id:', "if False:"),
     Mutation("M30", "Accept negative integer amounts", "app/money.py", "if value < 0:", "if False:"),
     Mutation("M31", "Stop throttling password guesses", "app/security.py",
-             'raise TooManyRequests("too many failed sign-in attempts; wait a few minutes",', 'print("throttle off",'),
+             "if len(self._prune(key, now, settings.login_window_seconds)) >= settings.login_max_failures:",
+             "if False:"),
     # --- proof and AI guardrails ------------------------------------------------------
     Mutation("M32", "Proof stops recomputing hashes", "app/ledger/proof.py",
              'if recomputed != row["hash"]:\n            checks["chain"].fail(f"#{seq}: content does not match its hash',
@@ -132,6 +140,103 @@ MUTATIONS = [
              "bad = grounding_check(text, facts)", "bad = []"),
     Mutation("M35", "Send the user's memo to the LLM", "app/sentinel/narrator.py",
              '"amount": hold["amount"],', '"amount": hold["amount"], "memo": hold["memo"],'),
+    # --- public sign-up --------------------------------------------------------------
+    Mutation("M36", "Public sign-up creates administrators", "app/ledger/admin_ops.py",
+             "VALUES (%s, %s, 'holder', %s)", "VALUES (%s, %s, 'admin', %s)"),
+    Mutation("M37", "Remove the sign-up rate limit", "app/api/routes_auth.py",
+             "signup_throttle.attempt(_client_ip(request))", "pass"),
+    # --- auditor access: requested at sign-up, granted only by an administrator ---------
+    Mutation("M38", "Let any signed-in user decide auditor requests", "app/api/routes_admin.py",
+             'deciders = require_roles("admin")', 'deciders = require_roles("admin", "auditor", "holder")'),
+    Mutation("M39", "Decide an auditor request twice (skip the status check)", ADMIN_OPS,
+             'if req["status"] != "pending":', "if False:"),
+    Mutation("M40", "Decide auditor requests without locking the request row", ADMIN_OPS,
+             'FROM access_requests WHERE id = %s FOR UPDATE"', 'FROM access_requests WHERE id = %s"'),
+    Mutation("M41", "A waiting request no longer reserves its username", ADMIN_OPS,
+             'if waiting is not None and waiting["id"] != request_id:', "if False:"),
+    Mutation("M42", "Database accepts requests for admin access", ACCESS_SQL,
+             "role          TEXT NOT NULL CHECK (role = 'auditor'),", "role          TEXT NOT NULL,"),
+    Mutation("M43", "Database lets a non-admin's entry decide a request (LL012)", ACCESS_SQL,
+             "AND decider.role = 'admin') THEN", ") THEN"),
+    Mutation("M44", "Database lets a decided request be decided again (LL012)", ACCESS_SQL,
+             "IF OLD.status <> 'pending' THEN", "IF FALSE THEN"),
+    # users_guard is redefined by migration 003, so the live copy is the one to break.
+    Mutation("M45", "Make user roles editable (LL013)", MAIN_SQL,
+             "IF NEW.role <> OLD.role THEN", "IF FALSE THEN"),
+    Mutation("M46", "Drop the users-on-the-record check at commit (LL014)", ACCESS_SQL,
+             "CREATE CONSTRAINT TRIGGER users_created_on_record AFTER INSERT ON users\n"
+             "    DEFERRABLE INITIALLY DEFERRED\n"
+             "    FOR EACH ROW EXECUTE FUNCTION users_created_on_record();\n", ""),
+    Mutation("M47", "Proof stops comparing roles with the record", "app/ledger/proof.py",
+             'if entry["details"].get("role") != user["role"]:', "if False:"),
+    # --- the main administrator: decides who is an administrator, and cannot be removed ----
+    Mutation("M48", "Let any administrator create administrators", ADMIN_OPS,
+             "if not creator_is_main:", "if False:"),
+    Mutation("M49", "Let any administrator remove or restore administrators", ADMIN_OPS,
+             'if user["role"] == "admin" and not actor_is_main:', "if False:"),
+    Mutation("M50", "Let the main administrator's access be removed (app check)", ADMIN_OPS,
+             'if user["is_main_admin"] and not active:', "if False:"),
+    Mutation("M51", "Database lets the main administrator be removed (LL015)", MAIN_SQL,
+             "IF OLD.is_main_admin AND NOT NEW.is_active THEN", "IF FALSE THEN"),
+    Mutation("M52", "Database allows two main administrators", MAIN_SQL,
+             "CREATE UNIQUE INDEX users_one_main_admin ON users ((true)) WHERE is_main_admin;\n", ""),
+    Mutation("M53", "Database lets any administrator create administrators (LL014)", MAIN_SQL,
+             "OR (creator.is_main_admin AND creator.id <> NEW.id AND NOT NEW.is_main_admin)",
+             "OR (creator.role = 'admin' AND creator.id <> NEW.id AND NOT NEW.is_main_admin)"),
+    Mutation("M54", "Database lets any administrator change an administrator's access (LL016)", MAIN_SQL,
+             "AND decider.is_main_admin AND decider.id <> NEW.id) THEN", "AND decider.id <> NEW.id) THEN"),
+    Mutation("M55", "Proof stops checking who created administrators", "app/ledger/proof.py",
+             'if entry["actor_id"] != main_id or entry["actor_id"] == user_id:', "if False:"),
+    Mutation("M56", "Database lets the main-administrator flag move (LL013)", MAIN_SQL,
+             "IF NEW.is_main_admin <> OLD.is_main_admin THEN", "IF FALSE THEN"),
+    Mutation("M57", "Proof judges every administrator by the old rule", "app/ledger/proof.py",
+             'if rule_from is None or entry["seq"] <= rule_from:', "if True:"),
+    Mutation("M58", "Proof trusts the main-administrator flag over the signed record", "app/ledger/proof.py",
+             "if marked != ([main_id] if main_id is not None else []):", "if False:"),
+    Mutation("M59", "Database allows a second switch to the main-administrator rule", MAIN_SQL,
+             "CREATE UNIQUE INDEX journal_one_main_admin_switch ON journal ((true)) WHERE kind = 'MAIN_ADMIN';\n", ""),
+    # --- personal details: the person changes them, another administrator checks them ------
+    Mutation("M60", "Let an administrator check their own personal details", DETAILS,
+             'if user["id"] == actor_id:', "if False:"),
+    Mutation("M61", "Verify details without checking the version that was seen", DETAILS,
+             'if row["version"] != version:', "if False:"),
+    Mutation("M62", "Decide the same version of personal details twice", DETAILS,
+             'if row["status"] != "waiting":', "if False:"),
+    Mutation("M63", "Remove the row lock before deciding on personal details", DETAILS,
+             'FROM personal_details WHERE user_id = %s FOR UPDATE", (user["id"],))',
+             'FROM personal_details WHERE user_id = %s", (user["id"],))'),
+    Mutation("M64", "Database lets changed details keep their old verification", DETAILS_SQL,
+             "IF NEW.version <> OLD.version + 1 OR NEW.status <> 'waiting' THEN", "IF FALSE THEN"),
+    Mutation("M65", "Database accepts a decision on details from anyone (LL017)", DETAILS_SQL,
+             "ELSE actor.role = 'admin' AND actor.id <> NEW.user_id AND actor.id = NEW.decided_by END) THEN",
+             "ELSE true END) THEN"),
+    Mutation("M66", "Database accepts a change of details made by someone else (LL017)", DETAILS_SQL,
+             "CASE WHEN expected = 'DETAILS_SUBMITTED' THEN actor.id = NEW.user_id",
+             "CASE WHEN expected = 'DETAILS_SUBMITTED' THEN true"),
+    Mutation("M67", "Proof stops comparing stored details with the record", "app/ledger/proof.py",
+             'elif (row["version"], row["status"], row["decided_by"]) != \\', "elif False and \\"),
+    Mutation("M68", "Write the personal details themselves into the journal", DETAILS,
+             '"fields": changed})', '"fields": changed, "values": {f: str(values.get(f)) for f in changed}})'),
+    Mutation("M69", "Let auditors read personal details", "app/api/routes_details.py",
+             'checkers = require_roles("admin")', 'checkers = require_roles("admin", "auditor")'),
+    Mutation("M70", "Let personal details be deleted", DETAILS_SQL,
+             "CREATE TRIGGER personal_details_no_delete BEFORE DELETE ON personal_details\n"
+             "    FOR EACH ROW EXECUTE FUNCTION forbid_mutation();\n", ""),
+    # --- changing your own password ------------------------------------------------------
+    Mutation("M71", "Change a password without knowing the current one", ADMIN_OPS,
+             'if user is None or not verify_password(current, user["password_hash"]):', "if user is None:"),
+    Mutation("M72", "Keep other sessions alive after a password change", ADMIN_OPS,
+             "UPDATE users SET password_hash = %s, token_version = token_version + 1 WHERE id = %s ",
+             "UPDATE users SET password_hash = %s WHERE id = %s "),
+    Mutation("M73", "Stop counting wrong current passwords (no throttle)", "app/api/routes_auth.py",
+             '        if exc.code == "WRONG_PASSWORD":\n            login_throttle.fail(ip, user.username)\n',
+             ""),
+    Mutation("M74", "Accept the current password as the new one", ADMIN_OPS,
+             'if verify_password(new, user["password_hash"]):', "if False:"),
+    Mutation("M75", "Do not compare the re-entered new password", "app/api/schemas.py",
+             'if "new_password" in info.data and value != info.data["new_password"]:', "if False:"),
+    Mutation("M76", "Database accepts a password change off the record (LL018)", PASSWORD_SQL,
+             "AND j.actor_id = NEW.id) THEN", "OR TRUE) THEN"),
 ]
 
 

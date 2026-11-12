@@ -9,6 +9,22 @@ if the defence were removed. Status is one of:
 * **Detected**: cannot be prevented by the application (someone with database-owner rights), but is reliably detected by the proof and the offline verifier.
 * **Accepted**: a known gap, left open on purpose. The reason is given in [Accepted risks](#accepted-risks-what-is-still-open-and-why).
 
+## The attacks the problem statement names
+
+The brief lists what a judge will try against the deployed system. Each one is below, with the threats that cover it, the tests that force it, and the matching line of `tools/attack.py`, which runs the attacks against any URL.
+
+| The brief's attack | Threats | Tests | `attack.py` |
+|---|---|---|---|
+| Two withdrawals fired at the same instant to overdraw an account | T01, T02, T03 | `test_two_withdrawals_at_the_same_instant_cannot_overdraw`, `test_two_withdrawals_over_http_cannot_overdraw`, `test_withdrawal_and_transfer_racing_for_the_same_money` | "two Rs 600 withdrawals at once from Rs 1,000", "25 simultaneous Rs 100 transfers against Rs 400" |
+| The same transfer replayed to pay a vendor twice | T19, T20, T21, T26, T27 | `test_same_key_twice_moves_money_once_and_returns_the_same_bytes`, `test_twenty_copies_at_the_same_instant_move_money_once`, `test_retry_arriving_while_the_first_is_in_flight_gets_the_first_answer` | "same request x20 with one Idempotency-Key", "reuse a key for a bigger amount" |
+| A transfer that moves money out of an account that is not theirs | T30, T33 | `test_holder_cannot_transfer_out_of_someone_elses_account`, `test_holder_cannot_withdraw_from_someone_elses_account`, `test_moving_someone_elses_money_over_http_is_refused` | "move or read another user's money" |
+| A balance driven negative through a race | T01, T03, T04, T05, T16 | `test_concurrent_transfers_from_one_account_cannot_overdraw`, `test_overdraft_floor_holds_under_a_race`, `test_daily_limit_holds_under_a_race`, `test_database_refuses_an_overdraw_even_if_the_application_check_is_skipped` | "25 simultaneous Rs 100 transfers against Rs 400" |
+| A ledger row altered to hide a payment | T44, T45, T46, T47 | `test_journal_rows_cannot_be_updated_deleted_or_truncated`, `test_editing_a_row_is_detected_by_the_proof`, `test_rewriting_history_and_rehashing_without_the_key_is_detected` | "PUT / PATCH / DELETE a journal entry" |
+| A request that fails halfway (from the brief's first standard) | T07, T25 | `test_failure_between_debit_and_credit_leaves_no_trace`, `test_connection_killed_mid_transfer_moves_nothing` | – |
+| "We will take one lock or one check out of your code and run your tests" | all of the above | `python tools/mutation_check.py`: 76 of 76 removals make a test fail ([how](#how-we-know-the-tests-test-something)) | – |
+
+Everything else in this file is what we found beyond that list.
+
 ## What we protect, and whom we trust
 
 | Asset | Rule |
@@ -18,10 +34,14 @@ if the defence were removed. Status is one of:
 | Exactly once | One (user, Idempotency-Key) moves money at most once and always gets the same answer. |
 | Entitlement | Money leaves a customer account only at its owner's request (or by an administrator's journaled reversal, or by the approval of a payment its owner requested). |
 | The record | Every posting, every refused attempt, every AI suggestion and every human decision is in an append-only, hash-chained, Ed25519-signed journal. |
+| Personal details | Only the person changes their own details; only an administrator who is not that person verifies them, one version at a time; only the person and administrators see them; they never enter the permanent journal. |
+| Who may sign in | Administrator access is never self-service: only the main administrator creates administrators or removes an administrator's access, and nobody can remove the main administrator. Auditor access is granted only by an administrator's decision, on the record. A user keeps the role it was created with. |
 
 | Party | Trust |
 |---|---|
 | Browser / API client | Untrusted. Every rule is enforced server-side, and amounts, accounts and memos are re-validated. "The form will not let you" is never relied on. |
+| Administrators | Trusted with the daily work (deposits, approvals, reversals, auditor requests, holders and auditors, checking personal details), each action attributed and on the record (see A1). They can read everyone's personal details (A15). Not trusted to decide who else is an administrator, or to change anyone's personal details. |
+| Main administrator | The top of authority: the only one who creates administrators or removes or restores their access. Nobody can remove them. Trusted (see A13). |
 | Application server | Trusted to run the rules, but **assumed buggy**. PostgreSQL re-checks the critical rules itself (the floor CHECK, balance-only-via-posting, double entry, append-only, and the uniqueness of keys, decisions and reversals). |
 | Database owner / DBA | Can bypass triggers. Not trusted for integrity: tampering is detected through the hash chain and signatures, whose signing key is **not** stored in the database. |
 | Signing key holder | Root of trust for "prove". If the key and the database are both compromised, only an external anchor (see A2) can detect a rewrite. |
@@ -73,14 +93,14 @@ if the defence were removed. Status is one of:
 |---|---|---|---|---|
 | T30 | **Move another user's money** (IDOR on `from_account`). | The server checks `owner_id == caller` on every request. The refusal is journaled on the *victim's* statement with the attacker's name, and the attacker is not told the balance. | `test_holder_cannot_withdraw_from_someone_elses_account`, `…transfer_out_of…`, `test_moving_someone_elses_money_over_http_is_refused`. M06, M07. | Closed |
 | T31 | A holder **mints money** with a deposit. | Deposits are admin-only (they record money that really arrived from outside). | `test_holder_cannot_mint_money_with_a_deposit`. M08. | Closed |
-| T32 | The **auditor** moves money or changes anything. | Read-only role: every write path refuses it, and the refusal is journaled. | `test_auditor_is_read_only`, `test_auditor_reads_everything_but_moves_nothing`. M09. | Closed |
+| T32 | The **auditor** moves money or changes anything (beyond their own personal details and password). | Read-only role: every write path refuses it, and the refusal is journaled. | `test_auditor_is_read_only`, `test_auditor_reads_everything_but_moves_nothing`. M09. | Closed |
 | T33 | An **administrator takes money out** of a customer account. | Admins cannot withdraw from or transfer out of customer accounts. They can deposit, approve a payment the holder requested, and reverse with a mandatory reason, all journaled, attributed and flagged for the auditor. | `test_admin_cannot_take_money_out_of_a_customer_account` | Accepted (A1) for reversals |
 | T34 | **Forged token**: `alg=none`, wrong key, tampered signature, expired. | PyJWT with `algorithms=["HS256"]`; signature, `exp`, `iat`, `sub` and `tv` required. | `test_forged_and_stale_tokens_are_rejected`, attack.py | Closed |
 | T35 | **Role claim tampering** (or a stale role after demotion). | The role in the token is ignored; the role is re-read from the database on every request. | `test_role_claim_in_the_token_is_not_trusted`. M28. | Closed |
-| T36 | A **deactivated user** keeps using an old token. | `is_active` and `token_version` are checked on every request. Deactivation and logout bump the version. | `test_deactivated_users_lose_access_immediately`. M27. | Closed |
+| T36 | A **deactivated user** keeps using an old token. | `is_active` and `token_version` are checked on every request. Deactivation, logout and a password change bump the version. | `test_deactivated_users_lose_access_immediately`. M27. | Closed |
 | T37 | **Read** another user's statement or balance. | Holders see only their own accounts. The payee lookup returns name and status, never a balance. | `test_moving_someone_elses_money_over_http_is_refused`. M29. | Closed |
 | T38 | **Mass assignment**: send `balance`, `owner_id` or `role` in a body. | Every body model is `extra="forbid"`. Accounts open at 0 (DB `LL001`) and identity columns are immutable (`LL003`). | `test_unknown_fields_are_rejected_not_applied`, `test_a_balance_cannot_be_set_directly` | Closed |
-| T39 | **Password guessing.** | scrypt hashes. Failed logins are throttled per IP and per (IP, username), so an attacker cannot lock a real user out. | `test_password_guessing_is_throttled`. M31. | Closed (see A4) |
+| T39 | **Password guessing.** | scrypt hashes. Failed logins are throttled per IP and per (IP, username), so an attacker cannot lock a real user out. Wrong current passwords on the change-password form count against the same limit (T100). | `test_password_guessing_is_throttled`. M31. | Closed (see A4) |
 | T40 | Username enumeration by **timing**. | Unknown usernames still run one scrypt check (dummy hash). | — | Mitigated, not measured |
 | T41 | **Spoof `X-Forwarded-For`** to dodge the login throttle. | Only the last hop (added by our own proxy) is trusted, and only when `TRUST_PROXY` is on. Found while writing the deploy config; see PROMPTS.md. | — | Closed |
 | T42 | **CSRF.** | Auth is a bearer token in the `Authorization` header, never a cookie, so a cross-site form cannot carry it. | — | Closed |
@@ -134,20 +154,87 @@ if the defence were removed. Status is one of:
 | T70 | Flood of refused attempts fills the journal / queues on the chain head. | Authenticated users only, and each attempt is small. No per-user rate limit on money endpoints. | — | Accepted (A5) |
 | T71 | The single chain head caps throughput. | A deliberate choice of correctness over speed. | — | Accepted (A8) |
 
+## H. Public sign-up and auditor requests ("Create user" on the home page)
+
+Anyone may become an account holder (with an empty account) or **ask** to become an auditor. A request is not a user: nothing can sign in with it until an administrator approves it.
+
+| ID | Attack | Defence | Proof | Status |
+|---|---|---|---|---|
+| T72 | **Sign up as an administrator** from the public page. | The sign-up `role` accepts only `holder` or `auditor`, so `{"role": "admin"}` is a 422, and unknown fields are refused too. A holder sign-up hard-codes `'holder'` in its INSERT. The database refuses a request for admin access (`CHECK (role = 'auditor')`) and, at commit, any auditor not created on the record by *another* administrator and any administrator not created by the main administrator (`LL014`). | `test_sign_up_cannot_choose_admin_or_a_balance`, `test_the_database_refuses_requests_for_admin_access`, `test_every_user_is_created_on_the_record_and_staff_only_by_an_admin`, attack.py. M36, M42, M46. | Closed |
+| T73 | Sign up for **free money** (an opening balance). | The new account opens at ₹0 (DB `LL001`); money arrives only through an admin-recorded deposit, which a new holder cannot make. | `test_sign_up_gives_an_account_holder_with_one_empty_account` | Closed |
+| T74 | **Sign-up flood**: thousands of users and accounts to bloat the journal or squat names. | At most 10 sign-up attempts per address per 10 minutes; every attempt counts, successful or not, holder or auditor. | `test_sign_up_is_rate_limited_per_address`. M37. | Mitigated (A11) |
+| T75 | **Username probing** through "username is taken". | Usernames are not secrets (they show on statements as "initiated by"). Probing is rate-limited, passwords are scrypt-hashed and login is throttled. | — | Accepted |
+| T76 | **Use an auditor account before anyone approves it.** | Asking creates a row in `access_requests`, not in `users`, so there is nothing to sign in with: sign-in answers `403 APPROVAL_PENDING` and issues no token. The auditor is created only by the approval, in the same transaction as the signed decision. | `test_asking_for_auditor_access_creates_a_request_not_a_user`, `test_an_approved_request_becomes_an_auditor_on_the_record`, attack.py | Closed |
+| T77 | **Approve your own request**, or have anyone but an administrator decide. | Approve/decline need the admin role, re-read from the database on every request. The database also refuses a decision unless its `ACCESS_DECISION` journal entry was written by an administrator, who is named as the decider (`LL012`). | `test_only_an_administrator_can_decide`, `test_a_decision_must_be_on_the_record_and_by_an_administrator`, attack.py. M38, M43. | Closed |
+| T78 | **Two administrators decide at once** (approve and approve, or approve and decline): two auditors, or a "declined" request with a live account. | The request row is locked (`FOR UPDATE`) and its status checked under the lock, so the second decision waits and gets `409 ALREADY_DECIDED`. In the database a decision is final (`LL012`), and the proof flags any request decided twice. | `test_two_admins_deciding_at_once_make_exactly_one_decision`, `test_a_request_is_decided_exactly_once`, `test_a_decided_request_stays_decided_even_in_sql`. M39, M40, M44. | Closed |
+| T79 | **Squat a name**: sign up as a holder with a name that is waiting for approval, so the approval would create someone else, or ask for an existing user's name. | A username is unique across users *and* waiting requests, checked under one per-name lock on every path (`_claim_username`), with one waiting request per name in the database. The approval creates the user from the stored request, never from the caller's input. | `test_a_waiting_request_reserves_its_username`. M41. | Closed |
+| T80 | **Promote someone by editing their role** (an SQL `UPDATE`, or a future bug). | `users_guard` refuses any change of role or username (`LL013`). If the database owner switches the guard off, the proof's access check compares every role with its signed `USER_CREATED` entry and fails. | `test_a_user_keeps_the_role_it_was_created_with`, `test_the_proof_catches_a_role_changed_behind_the_guards`. M45, M47. | Closed (Detected for the database owner) |
+| T81 | **Probe whether a name is waiting for approval** at sign-in. | The request's state is shown only to someone who gives its password. A wrong password gets the same `BAD_CREDENTIALS` as anyone else, runs the same password-hash work, and counts against the login throttle. | `test_asking_for_auditor_access_creates_a_request_not_a_user` | Mitigated |
+| T82 | **Flood the administrators' queue** with requests. | The same per-address sign-up limit. Requests are not journal entries (only decisions are), so they cannot bloat the signed record, and declining one takes one click. | `test_sign_up_is_rate_limited_per_address` | Mitigated (A11) |
+
+## I. Administrators and the main administrator
+
+Any administrator does the daily work, so approvals and deposits never wait for one person. Who **is** an administrator is decided by one person, the main administrator: the first administrator, created from the server's command line (`admin` in the demo). "Remove" never deletes anything: access ends at once and the history stays.
+
+| ID | Attack | Defence | Proof | Status |
+|---|---|---|---|---|
+| T83 | **A second administrator makes more administrators** (accomplices, or a spare account to keep after leaving). | Only the main administrator may create one: the API answers `403 MAIN_ADMIN_ONLY`. At commit the database refuses an administrator whose `USER_CREATED` entry was not written by the main administrator (`LL014`). The proof names any administrator created outside the rule. | `test_only_the_main_administrator_creates_administrators`, `test_the_database_takes_administrators_only_from_the_main_administrator`, `test_the_proof_names_administrators_made_outside_the_rule`, attack.py. M48, M53, M55. | Closed |
+| T84 | **Lock out the main administrator**, so nobody can undo what happens next. | Refused for everyone, the main administrator included (`403 MAIN_ADMIN_PROTECTED`). In the database, `users_guard` refuses to deactivate the main administrator, whatever the SQL (`LL015`). | `test_nobody_can_remove_the_main_administrator`, `test_the_database_keeps_the_main_administrator`, attack.py. M50, M51. | Closed |
+| T85 | **One administrator locks out another** (to stop them rejecting a payment), or restores a removed accomplice. | Removing or restoring an *administrator's* access is for the main administrator only (`403 MAIN_ADMIN_ONLY`). At commit the database needs a signed `USER_STATUS` entry by the main administrator, for that user and that new state (`LL016`). Holders' and auditors' access stays with any administrator, journaled. | `test_only_the_main_administrator_removes_or_restores_administrators`, `test_the_database_lets_only_the_main_administrator_change_an_administrators_access`. M49, M54. | Closed |
+| T86 | **Become the main administrator**: move the flag to yourself, or add a second one. | The flag is set once, when the first administrator is created from the command line. The API cannot set it and the command line refuses a second. `users_guard` refuses any change to it (`LL013`), a unique index allows only one, and a CHECK allows it only on an administrator. If the database owner switches the guard off and moves the flag anyway, the proof compares it with the signed record (the main administrator's `USER_CREATED` entry, or an upgrade's `MAIN_ADMIN` entry) and fails. | `test_the_first_administrator_is_the_one_main_administrator`, `test_the_database_allows_one_main_administrator`, `test_the_database_keeps_the_main_administrator`, `test_the_proof_catches_a_main_administrator_swapped_behind_the_guards`. M52, M56, M58. | Closed (Detected for the database owner) |
+| T87 | **An upgrade judges the past by the new rule**: administrators made when any administrator could create one suddenly look like faults (and the easy "fix" is a weaker check), or the upgrade picks a main administrator nobody can verify. | `migrate` puts the switch on the signed record: one `MAIN_ADMIN` entry naming the main administrator (the database allows only one). The proof judges each administrator by the rule in force when it was created. Found while testing upgrades; see PROMPTS.md. | `test_administrators_are_judged_by_the_rule_in_force_when_they_were_created`, `test_the_switch_to_the_main_administrator_rule_is_recorded_once`. Upgrades of real version-2 databases checked by hand (PROMPTS.md, entry 10). M57, M59. | Closed |
+| T88 | **A removed administrator keeps working** with a token issued before the removal. | Removing access bumps the user's token version, and every request re-reads `is_active` and the version, so the next request gets `401 SESSION_REVOKED`. | `test_only_the_main_administrator_removes_or_restores_administrators`, attack.py. M27. | Closed |
+| T89 | **"Delete" an administrator to erase what they did.** | There is no delete. Removing access keeps the user, and the journal is append-only, so every deposit, approval and decision they made stays under their name, and their access can be restored. | `test_only_the_main_administrator_removes_or_restores_administrators`, `test_the_ledger_has_no_edit_or_delete_routes` | Closed |
+
+## J. Personal details
+
+Every user can keep the basic details a bank needs: date of birth, mobile, email, address, occupation and an optional nominee. No ID numbers are collected. Only the person changes them, and every change is a new version that waits to be checked. Any administrator except that person verifies a version or sends it back with a note.
+
+| ID | Attack | Defence | Proof | Status |
+|---|---|---|---|---|
+| T90 | **Read someone else's personal details** (another holder, or an auditor). | Only the person (`GET /api/me/details`) and administrators (`GET /api/users/{u}/details`) see them. Auditors get only the status, in `GET /api/users`. | `test_only_the_person_and_administrators_see_details`, attack.py. M69. | Closed |
+| T91 | **Change someone else's details**, for example an administrator "correcting" a customer's mobile number. | There is no endpoint for it: `PUT /api/me/details` always writes the caller's own details. At commit the database needs a `DETAILS_SUBMITTED` entry written by the person themselves (`LL017`). | `test_only_the_person_can_change_their_details`, `test_the_database_keeps_details_on_the_record`. M66. | Closed |
+| T92 | **Verify your own details** (an insider administrator, or a holder). | Verifying needs the admin role, and nobody decides on their own details (`403 OWN_DETAILS`). The database refuses it too: a CHECK on the decider, and at commit a decision entry by an administrator who is not the person (`LL017`). | `test_nobody_checks_their_own_details`, `test_the_database_keeps_details_on_the_record`, attack.py. M60, M65. | Closed |
+| T93 | **Keep a "verified" badge after changing the details** (get verified once, then change the address). | Every change is a new version that waits to be checked again. The database guard refuses a change that keeps an old decision, even when a decision entry is forged in the same transaction (`LL017`). | `test_changing_verified_details_sends_them_back_for_checking`, `test_the_database_keeps_details_on_the_record`. M64. | Closed |
+| T94 | **Verify details nobody saw**: the person changes them between the administrator opening them and clicking Verify. | A decision names the version that was looked at. Any other version gets `409 DETAILS_CHANGED`, and the database needs the decision entry for that exact version. | `test_a_check_applies_only_to_the_version_that_was_seen`. M61. | Closed |
+| T95 | **Two administrators decide at once** (verify and send back): "verified" with a note attached, or two decisions on the record. | The details row is locked (`FOR UPDATE`) and its state checked under the lock, so the second decision gets `409 ALREADY_DECIDED`. The database allows one decision per version, and the proof flags a version decided twice. | `test_two_administrators_deciding_at_once_decide_once`, `test_sending_back_needs_a_note_that_stays_out_of_the_journal`. M62, M63. | Closed |
+| T96 | **Personal data leaks into the permanent record**: the signed, append-only journal, the evidence export anyone can verify, or the AI. Once there, it could never be corrected or removed. | The journal records only who changed or checked which version, and the names of the fields that changed, never a value. The "send back" note may mention the details, so it is stored with them, not in the journal. Exports carry journal entries only. Sentinel and the LLM never see personal details. | `test_a_person_saves_their_details_and_they_wait_for_a_check`, `test_sending_back_needs_a_note_that_stays_out_of_the_journal`, attack.py. M68. | Closed |
+| T97 | **A database owner marks details verified, or deletes them**, behind the guards. | Deleting is refused by a trigger (`LL010`). With the triggers switched off, the proof replays every `DETAILS_*` entry, compares the result with the stored details and names the person whose details disagree. | `test_the_proof_catches_details_marked_verified_behind_the_guards`, `test_the_database_keeps_details_on_the_record`. M67, M70. | Closed (Detected for the database owner) |
+| T98 | **Script or spoofing through an address field**, aimed at the administrator who checks it. | Text fields refuse control and direction-changing characters, the UI never uses `innerHTML`, and the CSP is strict. Formats (mobile, PIN code, email, date of birth, state) are checked on the server and again by the database. | `test_bad_details_are_refused` | Mitigated (A6) |
+
+## K. Changing your password
+
+Any signed-in person changes their own password with the current password, the new one, and the new one again. Every other session ends at once.
+
+| ID | Attack | Defence | Proof | Status |
+|---|---|---|---|---|
+| T99 | **Change a password with a stolen session** (a token copied from an unlocked laptop or a shared browser). | The current password is required. A wrong one gets `403 WRONG_PASSWORD` and changes nothing; the session is not signed out, so the person is not punished for a typo. | `test_a_wrong_current_password_changes_nothing_and_keeps_you_signed_in`, attack.py. M71. | Closed |
+| T100 | **Use the change form to guess the current password** (a password oracle for whoever holds a session). | Wrong current passwords count against the same throttle as sign-in (per address, and per address and user), so guessing stops at `429`. Passwords are scrypt-hashed. | `test_guessing_the_current_password_is_throttled`. M73, M31. | Mitigated (A4) |
+| T101 | **The thief's session survives the owner's password change.** | A change moves the user's token version on: every other session gets `401 SESSION_REVOKED` at its next request, and the device that made the change gets a fresh token. | `test_everyone_can_change_their_own_password`, attack.py. M72. | Closed |
+| T102 | **Change someone else's password** (an administrator, or a bug). | There is no route for it: `/api/me/password` only ever changes the caller's own. At commit the database refuses a new password hash without a `PASSWORD_CHANGED` entry written by that same person (`LL018`). | `test_nobody_changes_someone_elses_password`, `test_the_database_refuses_a_password_change_off_the_record`. M76. | Closed |
+| T103 | **The password, or its hash, ends up in the record or a response.** | `PASSWORD_CHANGED` holds only who and when. Hashes are never returned, and request bodies are not logged. | `test_everyone_can_change_their_own_password` | Closed |
+| T104 | **A typo locks the person out**, or the "new" password is the old one. | The new password is typed twice (checked in the browser and on the server), needs at least 10 characters, and must differ from the current one. | `test_the_new_password_is_checked`. M74, M75. | Closed |
+
 ---
 
 ## Accepted risks: what is still open, and why
 
-* **A1. A malicious administrator.** An admin can reverse a legitimate transfer (with a reason) or approve a held payment that should have been rejected. Every such action is journaled, attributed and listed under the auditor's Flags. We did **not** build dual control (a second admin countersigning reversals and approvals). It is the obvious next step and would add a "pending co-signature" state to the decision flow.
+* **A1. A malicious administrator.** An admin can reverse a legitimate transfer (with a reason), approve a held payment that should have been rejected, or grant auditor access to the wrong person. With several administrators, any one of them can do this alone. Every such action is journaled, attributed and listed under the auditor's Flags, and only the main administrator can add or remove administrators. We did **not** build dual control (a second admin countersigning reversals and approvals). It is the obvious next step and would add a "pending co-signature" state to the decision flow.
 * **A2. Database owner and signing key both compromised.** They can rewrite history and re-sign it consistently. Only an *external* anchor detects this: a chain-head hash someone saved earlier (`/api/health`), a holder's signed receipt, or an auditor's exported bundle. We publish the anchor but do not push it anywhere automatically (for example to an external timestamping service).
 * **A3. Restoring an old backup** looks like an honest, shorter ledger. Same detection as A2.
-* **A4. Login throttling is per process and in memory.** With two workers, or after a restart, an attacker gets proportionally more guesses. A shared store (Redis or a DB table) would fix it. Passwords are scrypt-hashed and the demo passwords are public by design.
+* **A4. Login (and password-change) throttling is per process and in memory.** With two workers, or after a restart, an attacker gets proportionally more guesses. A shared store (Redis or a DB table) would fix it. Passwords are scrypt-hashed and the demo passwords are public by design.
 * **A5. No rate limit on money endpoints.** An authenticated user can spam refused attempts. Correctness never depends on rate limiting (the races are closed by locks), so we left throttling to the hosting edge.
 * **A6. Token in `sessionStorage`.** If an XSS ever got past the CSP, it could read the token. HttpOnly cookies would close that but bring CSRF back; we chose bearer tokens plus a strict CSP.
 * **A7. Held payments never expire.** Money can sit in suspense until someone decides. The proof shows exactly how much, and for how long.
 * **A8. Throughput.** Every append queues on one chain-head row, so expect hundreds (not tens of thousands) of entries per second. Sharding the chain per account would lift this at the cost of a single global order.
 * **A9. Key rotation.** Entries record `key_id`, but there is no rotation procedure. Changing `LEDGER_SIGNING_KEY` today makes old entries fail verification.
 * **A10. Sentinel is heuristic.** Rules with robust statistics, not a trained model. It will miss patterns it does not encode and will sometimes hold honest payments; a person always decides.
+* **A11. Sign-up limiting is in memory, per process and per address.** Many addresses (or more workers) get more sign-ups. A CAPTCHA or email verification would be the next step; we left it out of a demo system on purpose.
+* **A12. A request does not prove who is asking.** The administrator sees a name, a username and when they asked, and must confirm the person some other way (we have no email or employee-ID check). What we guarantee is that only an administrator can say yes, once, on the record.
+* **A13. One main administrator, and no hand-over or reset in the app.** Nobody can remove the main administrator. If that password is stolen, the main administrator can change it, which ends the thief's session, but only while they still know it: nobody can reset someone else's password in the app. If the main administrator forgets the password or leaves, nobody can add or remove administrators (the others keep the daily work going). Recovery is a job for whoever runs the server: with database-owner rights they can set a new password hash, which means switching off the guard that puts every password change on the record (`LL018`), so it is not journaled. A signed hand-over and reset from the command line, on the record, is the next step. We did not build a way to promote someone inside the app, because that is exactly what an insider would attack.
+* **A14. "Verified" is a person's judgement.** LedgerLine sees no documents, sends no OTP to the mobile number or link to the email, and checks no address against a registry. "Verified" means that an administrator who is not the person checked this exact version against something outside the app, on the record.
+* **A15. Personal details are readable by every administrator, and stored in plain text.** Anyone with database access can read them, and reading them is not recorded anywhere. Column encryption, a log of who looked at whose details, and limiting which administrators see what are the next steps.
+* **A16. Personal details can be corrected, not erased.** Banks must keep these records, so the app has no delete. Because the details never enter the journal, erasing them later stays possible without touching the signed history; it would need its own recorded event so that the proof still agrees.
 
 ## Things we found that are easy to miss
 
@@ -160,6 +247,9 @@ if the defence were removed. Status is one of:
 * T61–T62: memo-based prompt injection, and LLM numbers a reviewer might trust.
 * T63: telling the fraudster which rule caught them.
 * T53: tail truncation passes every internal check; only an outside anchor catches it.
+* T87: an upgrade that adds a rule must not judge the past by it. The switch itself belongs on the signed record.
+* T96: a permanent, signed record is exactly the wrong place for personal data, because it could never be corrected or erased. The journal says who changed which version, never what.
+* T94: "verified" must name the version the administrator actually saw, or the person can change the details in between.
 
 ## How we know the tests test something
 
@@ -168,5 +258,8 @@ in a scratch copy of the code, and runs the whole suite. Every mutation must
 make at least one test fail. Concurrency tests use `hooks.race_window(...)`
 to force the dangerous interleaving, and they assert that the **database
 backstop never fired**. That last assertion is what makes a removed lock fail
-a test even though PostgreSQL would still have saved the money. The current
-result is in [docs/MUTATION_REPORT.md](docs/MUTATION_REPORT.md).
+a test even though PostgreSQL would still have saved the money. A mutation
+must break the copy of a rule that actually runs: when a migration replaces a
+database function, the mutations aimed at the old copy move to the new one
+(PROMPTS.md, entry 9). The current result is in
+[docs/MUTATION_REPORT.md](docs/MUTATION_REPORT.md).

@@ -97,13 +97,13 @@ class LoginThrottle:
             q.popleft()
         return q
 
-    def check(self, ip: str, username: str) -> None:
+    def check(self, ip: str, username: str, what: str = "sign-in attempts") -> None:
         settings = get_settings()
         now = time.monotonic()
         with self._lock:
             for key in (f"ip:{ip}", f"pair:{ip}:{username}"):
                 if len(self._prune(key, now, settings.login_window_seconds)) >= settings.login_max_failures:
-                    raise TooManyRequests("too many failed sign-in attempts; wait a few minutes",
+                    raise TooManyRequests(f"too many failed {what}; wait a few minutes",
                                           headers={"Retry-After": str(settings.login_window_seconds)})
 
     def fail(self, ip: str, username: str) -> None:
@@ -118,3 +118,32 @@ class LoginThrottle:
 
 
 login_throttle = LoginThrottle()
+
+
+class SignUpThrottle:
+    """Self-service sign-ups per client IP (in-memory, per process). Every
+    attempt counts, successful or not, so one client cannot flood the system
+    with users and accounts or probe usernames at speed."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._attempts: dict[str, deque] = defaultdict(deque)
+
+    def attempt(self, ip: str) -> None:
+        settings = get_settings()
+        now = time.monotonic()
+        with self._lock:
+            q = self._attempts[ip]
+            while q and now - q[0] > settings.signup_window_seconds:
+                q.popleft()
+            if len(q) >= settings.signup_max:
+                raise TooManyRequests("too many sign-ups from this address; try again later",
+                                      headers={"Retry-After": str(settings.signup_window_seconds)})
+            q.append(now)
+
+    def reset(self) -> None:
+        with self._lock:
+            self._attempts.clear()
+
+
+signup_throttle = SignUpThrottle()
