@@ -86,9 +86,12 @@ def test_a_second_administrator_does_the_daily_work(server):
     r = call(server, {**second, "Idempotency-Key": key()}, "POST", "/api/deposits",
              {"account": target, "amount": "2500", "memo": "salary"})
     assert r.status_code == 201 and r.json()["status"] == "posted", r.text
-    request = admin_ops.request_auditor_access(unique("aud"), "Asks For Access", PASSWORD)
-    r = call(server, second, "POST", f"/api/access-requests/{request['id']}/approve", {"note": "checked"})
-    assert r.status_code == 200, r.text
+    holder = make_user()
+    r = call(server, second, "POST", "/api/accounts", {"owner_username": holder.username, "name": "Second account"})
+    assert r.status_code == 201, r.text
+    r = call(server, second, "POST", "/api/users",
+             {"username": unique("aud"), "display_name": "New Auditor", "role": "auditor", "password": PASSWORD})
+    assert r.status_code == 201 and r.json()["role"] == "auditor", r.text
 
 
 # ------------------------------------------------------------------ removing access

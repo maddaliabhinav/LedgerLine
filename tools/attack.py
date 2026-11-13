@@ -176,28 +176,17 @@ def main() -> int:
            f"{r2.json()['user']['role'] if r2.status_code == 201 else ''} with Rs "
            f"{r2.json()['account']['balance']['rupees'] if r2.status_code == 201 else '?'}")
 
-    # 12. Ask for auditor access, then try to use it before any administrator agrees.
+    # 12. Become an auditor without an administrator: sign up as one, or have a holder make one.
     name, secret = f"spy{uuid.uuid4().hex[:8]}", "would-be-auditor-123"
     r1 = httpx.post(f"{args.url}/api/auth/register", timeout=60,
                     json={"username": name, "display_name": "Would-be auditor", "password": secret, "role": "auditor"})
-    req = r1.json().get("request", {}).get("id") if r1.status_code == 202 else None
-
-    def sign_in_code() -> str:
-        r = httpx.post(f"{args.url}/api/auth/login", timeout=60, json={"username": name, "password": secret})
-        return f"{r.status_code} {r.json().get('error', {}).get('code', 'TOKEN ISSUED')}"
-
-    before = sign_in_code()
-    by_holder = holder.post(f"/api/access-requests/{req}/approve", {}, key=None).status_code if req else 0
-    by_auditor = auditor.post(f"/api/access-requests/{req}/approve", {}, key=None).status_code if req else 0
-    # Tidy up as the real administrator would: decline it. It still cannot sign in.
-    declined = admin.post(f"/api/access-requests/{req}/decline", {"note": "attack.py test request"},
-                          key=None).status_code if req else 0
-    after = sign_in_code()
-    ok = (r1.status_code == 202 and "access_token" not in r1.json() and before == "403 APPROVAL_PENDING"
-          and by_holder == 403 and by_auditor == 403 and declined == 200 and after == "403 ACCESS_DECLINED")
-    record("sign up as auditor and use it before an admin approves", ok,
-           f"request -> {r1.status_code}; sign in -> {before}; holder/auditor approve -> {by_holder}/{by_auditor}; "
-           f"after decline -> {after}")
+    r2 = httpx.post(f"{args.url}/api/auth/login", timeout=60, json={"username": name, "password": secret})
+    r3 = holder.post("/api/users", {"username": name, "display_name": "Would-be auditor", "role": "auditor",
+                                    "password": secret}, key=None)
+    ok = r1.status_code == 422 and r2.status_code == 401 and r3.status_code == 403
+    record("become an auditor without an administrator", ok,
+           f"sign up as auditor -> {r1.status_code}; sign in -> {r2.status_code}; "
+           f"holder creates an auditor -> {r3.status_code}")
 
     # 13. Pay a system account directly.
     r = holder.post("/api/transfers", {"from_account": b, "to_account": "SYS-SUSPENSE", "amount": "1"})
