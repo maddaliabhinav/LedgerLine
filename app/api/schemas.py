@@ -6,7 +6,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from datetime import date
-from typing import Annotated, Literal
+from typing import Annotated
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
@@ -68,14 +68,22 @@ class LoginIn(Strict):
 
 
 class SignUpIn(Strict):
-    """Public sign-up. role is "holder" (the default) or "auditor", which only
-    files a request for an administrator to decide. {"role": "admin"} is a 422,
-    and extra="forbid" rejects anything else ("balance", "is_active", ...)
-    instead of silently ignoring it."""
+    """Public sign-up makes account holders and nothing else. role may be left
+    out or sent as "holder"; "auditor" or "admin" is a 422, because only an
+    administrator creates those (POST /api/users). extra="forbid" rejects
+    anything else ("balance", "is_active", ...) instead of silently ignoring it."""
     username: str = Field(min_length=3, max_length=32)
     display_name: str = Field(min_length=1, max_length=80)
     password: str = Field(min_length=10, max_length=256)
-    role: Literal["holder", "auditor"] = "holder"
+    role: str = "holder"
+
+    @field_validator("role")
+    @classmethod
+    def holders_only(cls, value: str) -> str:
+        if value != "holder":
+            raise ValueError("sign-up creates account holders only; an administrator creates auditor "
+                             "and administrator accounts")
+        return value
 
 
 class DepositIn(Strict):

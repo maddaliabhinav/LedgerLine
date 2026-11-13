@@ -20,8 +20,8 @@ snapshot and checks, independently of the cached balances:
   access       every user has exactly one USER_CREATED entry, with the role it has now;
                auditors were created by an administrator (or the server's command
                line), administrators by the one main administrator (who alone comes
-               from the command line); no access request decided twice, and every
-               approval created its auditor
+               from the command line); and for the auditor requests sign-up offered
+               until 13 Nov 2026: none decided twice, every approval created its auditor
   backstop     how many times the database had to refuse a write (should be 0)
 """
 
@@ -371,9 +371,12 @@ def _check_access(cur: Cursor, check: _Check, user_created: dict[int, list[dict]
             check.fail(f"approval #{decision['seq']} did not create the auditor it approved")
     staff = sum(1 for user in users.values() if user["role"] != "holder")
     since = f" (since the upgrade, #{rule_from})" if rule_from else ""
+    # Sign-up stopped offering auditor access on 13 Nov 2026 (administrators create
+    # auditors directly); decisions on requests made before that stay on the record.
+    history = (f"; earlier auditor requests approved: {len(approved)}, declined: {len(decisions) - len(approved)}"
+               if decisions else "")
     check.summary = (f"{len(users)} users, {staff} with staff access, main administrator: "
-                     f"{name(main_id) if main_id is not None else 'none'}{since}; "
-                     f"auditor requests approved: {len(approved)}, declined: {len(decisions) - len(approved)}")
+                     f"{name(main_id) if main_id is not None else 'none'}{since}{history}")
 
 
 def _check_details(cur: Cursor, check: _Check, record: list[dict]) -> None:

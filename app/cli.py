@@ -1,8 +1,8 @@
 """Command line: python -m app.cli <command>
 
   migrate            create the schema and the GENESIS entry, or upgrade an existing one (idempotent)
-  seed [--if-empty]  demo users, accounts and history (through the real engine), one auditor
-                     request and one set of personal details waiting for an administrator
+  seed [--if-empty]  demo users, accounts and history (through the real engine), and one set
+                     of personal details waiting for an administrator
   verify             run the full proof and print the result (exit 1 if anything fails)
   export FILE        write an evidence bundle for tools/verify_bundle.py
   keygen             print a fresh random LEDGER_SIGNING_KEY value
@@ -55,9 +55,6 @@ DEMO_DETAILS = {
               "state": "Andhra Pradesh", "pin_code": "520010", "occupation": "self_employed",
               "nominee_name": "Anita Verma", "nominee_relation": "spouse"},
 }
-
-# Asked for auditor access at sign-up; cannot sign in until an administrator approves.
-DEMO_REQUEST = ("meera", "Meera Nair (External Auditor)", "LedgerMeera#2026")
 
 
 def migrate() -> None:
@@ -184,7 +181,6 @@ def _seed_demo() -> None:
 
     # One payment Sentinel holds for review, so the admin queue is not empty on day one.
     engine.transfer(holder["acme"], accts["acme"], accts["rahul"], 2_80_000 * rupees, "Urgent advance", key())
-    admin_ops.request_auditor_access(*DEMO_REQUEST)
     # Personal details (made up, through the real path): Priya's are verified,
     # Rahul's wait for an administrator to check them.
     for username, values in DEMO_DETAILS.items():
@@ -193,7 +189,6 @@ def _seed_demo() -> None:
     print("seeded demo data:")
     for username, _, role, password in DEMO_USERS:
         print(f"  {role:8s} {username:8s} {password}")
-    print(f"  request  {DEMO_REQUEST[0]:8s} {DEMO_REQUEST[2]}   (auditor access, waiting for an administrator)")
     for label, number in accts.items():
         print(f"  account  {label:14s} {number}")
 
