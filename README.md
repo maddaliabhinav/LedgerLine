@@ -11,9 +11,9 @@ LedgerLine moves money between accounts so that:
 What sets it apart:
 
 * **The database is the backstop.** CHECK constraints and triggers mean even a buggy app cannot overdraw, create money or edit history.
-* **Mutation-tested tests.** `tools/mutation_check.py` removes each of 76 locks and checks; the test suite fails every time ([report](docs/MUTATION_REPORT.md)).
+* **Mutation-tested tests.** `tools/mutation_check.py` removes each of 74 locks and checks; the test suite fails every time ([report](docs/MUTATION_REPORT.md)).
 * **Red-team script.** `tools/attack.py` runs the judges' attacks (17 of them) against any URL and prints a scorecard.
-* **Who did what is on the record too.** New administrators, removed access, auditor approvals, checks of personal details and password changes are signed journal entries, and PostgreSQL refuses any of those changes that is not. Personal data itself never enters the permanent record.
+* **Who did what is on the record too.** New administrators and auditors, removed access, checks of personal details and password changes are signed journal entries, and PostgreSQL refuses any of those changes that is not. Personal data itself never enters the permanent record.
 * **AI that flags, people who decide.** Sentinel holds risky payments in suspense with explained reasons. An optional LLM writes reviewer notes that never see user text and whose every number is checked. A test proves the AI cannot reach money-moving code.
 * **Race Lab** in the UI fires real concurrent requests from your browser.
 
@@ -26,20 +26,16 @@ What sets it apart:
 | Account holder | `acme` | `LedgerAcme#2026` | LL-1004 (a vendor) |
 | **Main** administrator | `admin` | `LedgerAdmin#2026` | everything an administrator does, and the only one who creates administrators or removes their access |
 | Auditor (read-only) | `auditor` | `LedgerAudit#2026` | everything read-only: proof, journal, flags, duplicates, evidence export |
-| Auditor, **waiting for approval** | `meera` | `LedgerMeera#2026` | nothing yet: signing in says the request is waiting. Approve it as `admin` (Users page), then sign in |
 
-Anyone can also **create a user** from the home page and pick the account type:
+Anyone can also **create a user** from the home page: an **account holder**, ready straight away, with one account at ₹0.00. Nothing waits for approval.
 
-* **Account holder**: ready straight away, with one account at ₹0.00.
-* **Auditor**: only a *request*. Nobody can sign in with it until an administrator approves it on the Users page, and the approval or decline is a signed journal entry.
-
-Administrator access is never self-service. PostgreSQL enforces this as well: it refuses a request for admin access, a decision not made by an administrator on the record, a second decision, a change of role, and any auditor not created on the record by another administrator.
+**Auditors and administrators are never self-service.** An administrator creates them on the **Users** page (administrators: the main administrator only), and they can sign in straight away. Asking the sign-up form for `"role": "auditor"` or `"admin"` is a `422`. PostgreSQL enforces this as well: it refuses any auditor or administrator not created on the record by the right administrator, and any change of role. (Until 13 Nov 2026 sign-up also let people *ask* for auditor access, for an administrator to approve; that step was removed. Requests and decisions from before then stay in the database as history that cannot be rewritten.)
 
 ### The main administrator
 
 The first administrator (`admin`) is the **main administrator**, the top of authority. Signed in as `admin`, open **Users**, pick the role *admin* and create a second administrator.
 
-* **Any administrator** does all of the daily work: deposits, approving or rejecting held payments, reversals, auditor requests, accounts, and creating holders and auditors or removing their access. Nothing waits for the main administrator to be available.
+* **Any administrator** does all of the daily work: deposits, approving or rejecting held payments, reversals, accounts, and creating holders and auditors or removing their access. Nothing waits for the main administrator to be available.
 * **Only the main administrator** creates administrators, and removes or restores an administrator's access.
 * **Nobody can remove the main administrator**, not another administrator and not the main administrator by mistake.
 * **"Remove" never deletes.** The person is signed out at once and cannot sign in, and everything they did stays in the journal under their name. Their access can be restored.
@@ -73,7 +69,6 @@ Anyone signed in can change their own password from **My details → Change pass
 | Open, freeze, close accounts; set overdraft (≤ ₹50,000) | ✓ | – | – |
 | Create holders and auditors, remove or restore their access | ✓ | – | – |
 | Create administrators, remove or restore an administrator's access | main admin only | – | – |
-| Approve or decline auditor requests from sign-up | ✓ | – | sees them |
 | See and change your own personal details | ✓ | ✓ | ✓ |
 | Change your own password (needs the current one) | ✓ | ✓ | ✓ |
 | See other people's personal details | ✓ | – | status only |
@@ -88,7 +83,7 @@ Each of the ten requirements, how LedgerLine meets it, and the test or check tha
 
 | # | The brief asks for | How LedgerLine does it | Shown by |
 |---|---|---|---|
-| 1 | Sign-in with at least three roles (administrator, account holder, read-only auditor), each role's powers written down | The [roles table](#roles-and-what-each-may-do) above. The server re-reads the role from the database on every request and ignores the one in the token. | `test_auditor_reads_everything_but_moves_nothing`, `test_role_claim_in_the_token_is_not_trusted`, `test_only_the_main_administrator_creates_administrators` |
+| 1 | Sign-in with at least three roles (administrator, account holder, read-only auditor), each role's powers written down | The [roles table](#roles-and-what-each-may-do) above. The server re-reads the role from the database on every request and ignores the one in the token. | `test_auditor_reads_everything_but_moves_nothing`, `test_role_claim_in_the_token_is_not_trusted`, `test_only_an_administrator_creates_staff`, `test_only_the_main_administrator_creates_administrators` |
 | 2 | Accounts with balances: create one, view a balance, view a statement | Administrators open accounts (`POST /api/accounts`), and sign-up opens one at ₹0. `GET /api/accounts`, `GET /api/accounts/{no}/statement`. | `test_sign_up_gives_an_account_holder_with_one_empty_account`, `test_statement_has_debits_credits_refusals_running_balance_and_initiator` |
 | 3 | Deposits, withdrawals and transfers | `POST /api/deposits` (administrators: money arriving from outside), `/withdrawals` and `/transfers` (holders, from their own accounts). | the tests in rows 4 to 7 |
 | 4 | Every movement conserves money: state the invariant and show it holds | **Every entry's postings sum to zero.** So the sum of all balances, `SYS-EXTERNAL` and `SYS-SUSPENSE` included, is always 0, a transfer between customers nets to zero, and money inside LedgerLine (customer accounts + suspense) = external deposits − external withdrawals. PostgreSQL refuses an unbalanced entry at COMMIT. | Proof checks *double entry* and *conservation* (Auditor → Proof, or `python -m app.cli verify`); `test_random_concurrent_workload_conserves_money`, `test_database_refuses_an_unbalanced_entry_at_commit` |
@@ -97,7 +92,7 @@ Each of the ten requirements, how LedgerLine meets it, and the test or check tha
 | 7 | Concurrency safety: racing requests cannot both spend past the balance or corrupt the ledger | One transaction per request. It locks the customer accounts (`SELECT … FOR UPDATE`, in ascending id order) before any check, and the single chain head last, when it appends the entry. A second request waits for the first to commit, then sees the new balance. | `tests/test_concurrency.py` (11 tests that force the race), `test_two_withdrawals_over_http_cannot_overdraw` |
 | 8 | A statement per account: every debit, credit and refused attempt, with the running balance and who initiated it | `GET /api/accounts/{no}/statement`: postings and refusals, `balance_after` computed by the database, `initiated_by`. | `test_statement_has_debits_credits_refusals_running_balance_and_initiator` |
 | 9 | Per-account authorisation, decided by the server on every request | Holders move money only out of their own accounts. Administrators deposit, decide held payments and reverse, but cannot withdraw or transfer out of a customer account. Auditors move nothing. Every refusal is journaled on the targeted account. | `test_holder_cannot_withdraw_from_someone_elses_account`, `test_moving_someone_elses_money_over_http_is_refused`, `test_admin_cannot_take_money_out_of_a_customer_account` |
-| 10 | Automated tests that prove conservation, no negative balance under concurrency, no double payment on a replay, and that nobody moves another user's money | 166 tests; the races and retries are forced, not hoped for. `tools/mutation_check.py` removes 76 locks and checks one at a time, and every removal makes a test fail. | the tests above; [docs/MUTATION_REPORT.md](docs/MUTATION_REPORT.md) |
+| 10 | Automated tests that prove conservation, no negative balance under concurrency, no double payment on a replay, and that nobody moves another user's money | 161 tests; the races and retries are forced, not hoped for. `tools/mutation_check.py` removes 74 locks and checks one at a time, and every removal makes a test fail. | the tests above; [docs/MUTATION_REPORT.md](docs/MUTATION_REPORT.md) |
 
 The three standards it has to meet, and the AI rule:
 
@@ -114,7 +109,7 @@ What the brief asks us to hand in, and where it is:
 |---|---|
 | Public Git repository, with history across the week | this repository |
 | Live URL, with seed accounts and credentials for each role | the link at the top of this page, and [Demo accounts](#demo-accounts) |
-| THREATS.md and PROMPTS.md | [THREATS.md](THREATS.md): 104 threats and the risks we accepted; [PROMPTS.md](PROMPTS.md): 13 times the AI was wrong, and every prompt we gave it |
+| THREATS.md and PROMPTS.md | [THREATS.md](THREATS.md): 104 threats and the risks we accepted; [PROMPTS.md](PROMPTS.md): 14 times the AI was wrong, and every prompt we gave it |
 | Automated tests, including conservation, no double spend under concurrency, idempotent retries, and no moving another's money | `tests/`, rows 4 to 10 above |
 | Database schema, setup scripts, and deployment that works from a clean clone | `app/schema.sql`, `app/migrations/`, `python -m app.cli migrate` and `seed`; [Run it](#run-it) and [docs/DEPLOY.md](docs/DEPLOY.md) |
 | API documentation: who may call each endpoint, and what it does to the money | [docs/API.md](docs/API.md) |
@@ -146,7 +141,7 @@ After pulling an update, run `python -m app.cli migrate` again: it upgrades an e
 ## Prove it
 
 ```bash
-python -m pytest                          # 166 tests against real PostgreSQL, ~30 s
+python -m pytest                          # 161 tests against real PostgreSQL, ~30 s
 python tools/mutation_check.py            # remove each lock/check, prove a test fails (~22 min)
 python tools/attack.py --url http://localhost:8000      # 17 attacks, two workers are fine
 python -m app.cli verify                  # replay the whole journal: 15 checks
@@ -172,7 +167,7 @@ One money request is **one transaction**: claim the key, lock the customer rows 
 ## Documents
 
 * [THREATS.md](THREATS.md): 104 threats, each with its defence, test, mutation and status, plus the risks we accepted and why.
-* [PROMPTS.md](PROMPTS.md): the 13 times the AI was wrong (what we asked, what was wrong, how we caught it, the fix commit), and every prompt we gave it, in order.
+* [PROMPTS.md](PROMPTS.md): the 14 times the AI was wrong (what we asked, what was wrong, how we caught it, the fix commit), and every prompt we gave it, in order.
 * [docs/WRITEUP.md](docs/WRITEUP.md): what we built, what we did not, our integrity and concurrency model, what is unfinished.
 * [docs/API.md](docs/API.md): every endpoint, who may call it, what it does to the money.
 * [docs/DEPLOY.md](docs/DEPLOY.md): Render (blueprint included), Docker, Neon.
@@ -188,7 +183,7 @@ Python 3.13 · FastAPI · PostgreSQL 16 (psycopg 3, raw SQL so the locking is vi
 
 ```
 app/schema.sql            every money rule PostgreSQL enforces
-app/migrations/           schema upgrades on top of it (002: auditor requests, role guards; 003: the main administrator;
+app/migrations/           schema upgrades on top of it (002: role guards, and the old auditor requests; 003: the main administrator;
                           004: personal details; 005: password changes on the record)
 app/ledger/engine.py      every rupee moves through here
 app/ledger/journal.py     the only writer of journal rows and postings (hash chain + signatures)

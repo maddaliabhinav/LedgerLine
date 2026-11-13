@@ -5,12 +5,12 @@ conversation from 6 to 12 November 2026. The assistant wrote the code, ran it
 against a real PostgreSQL and copied the files to our laptop. We ran them
 there, and committed and pushed them ourselves. This file has two parts:
 
-1. **[Where the AI was wrong](#part-1-where-the-ai-was-wrong)**: 13 dated
+1. **[Where the AI was wrong](#part-1-where-the-ai-was-wrong)**: 14 dated
    entries in the form the problem statement asks for: what we asked for,
    what came back, what was specifically wrong with it, how we caught it, what
    we did instead, and the commit with the fix. Entries 1 and 2 are about the
    idempotency and concurrency logic.
-2. **[Every prompt, in order](#part-2-every-prompt-in-order)**: all 21
+2. **[Every prompt, in order](#part-2-every-prompt-in-order)**: all 29
    prompts we gave the AI while building LedgerLine, with what each one led
    to and the commits it went into.
 
@@ -146,6 +146,15 @@ that first added the files. Later entries link the exact fix commit.
 * **What we did instead:** The attack makes one wrong attempt (`403 WRONG_PASSWORD`), lets the owner change the password, and shows the thief's session is gone (`401 SESSION_REVOKED`). Throttling of guesses is proven in the test suite (`test_guessing_the_current_password_is_throttled`), where the throttle is reset between tests.
 * **Fixed in:** [1abcbe5](https://github.com/maddaliabhinav/LedgerLine/commit/1abcbe558e0312f6ecb4e47cc20c509aa706b7d6)
 
+### 14. 2026-11-13 — A commit link with an invented hash (docs)
+
+* **Asked:** Link P20 and P21 in the prompt log below to the commits they led to, now that those commits are on GitHub.
+* **It produced:** A link for `5e17e93` whose first seven characters were the real commit, followed by 33 characters it had made up instead of copying the full hash.
+* **What was wrong:** GitHub looks a commit up by the hash in the link, so it would have opened a 404. A judge who clicked it would have had good reason to doubt the rest of this file, whose whole point is that every claim links to real history.
+* **How it was caught:** The AI then printed the real hashes with `git rev-parse` to finish the other links, and the first one did not match what it had already written. It then checked every commit link in this file against a clone of the repository.
+* **What we did instead:** Hashes are copied from git's own output, never typed. All 41 commit links in this file were checked against git and resolve to real commits.
+* **Fixed in:** the commit that adds this entry, with P29.
+
 ---
 
 ## Part 2: every prompt, in order
@@ -155,7 +164,7 @@ are India time.
 
 * **P1–P9 are summaries.** Their exact wording was not kept, so they say
   what we asked for.
-* **P10–P21 are exact**, quoted as typed, typos included. A line break is
+* **P10–P29 are exact**, quoted as typed, typos included. A line break is
   shown as " / ", and long error messages are shortened with "…".
 
 Short replies inside a task, such as our answers to the AI's questions, are
@@ -253,8 +262,43 @@ is linked from one of these prompts.
 #### P20 · 12 Nov · Check the documents against the problem statement
 * **Asked** (exact): "analyze and update the documentation according to the given problem statement / and in prompts ,mention every prompt that used to make this project"
 * **Result:** The problem statement checked point by point in the README; the attacks it names mapped to our threats and tests in THREATS.md; every endpoint in the API guide's permission table; the isolation level explained in the write-up; Windows steps that avoid blocked launchers; and this part of PROMPTS.md.
-* **Commit:** the one that adds this entry.
+* **Commit:** [5e17e93](https://github.com/maddaliabhinav/LedgerLine/commit/5e17e93d21e750cf5b8c22ac3fa3ced73f98b0a2).
 
 #### P21 · 12 Nov · A branch of its own
 * **Asked** (exact): "i have used the change password name alredy"
-* **Result:** The documents go on a new branch, `feature/docs-problem-statement`, instead of the password feature's branch, and that branch is merged into `main`.
+* **Result:** The documents go on a new branch, `feature/docs-problem-statement`, instead of the password feature's branch, and that branch is merged into `main`, so `main` finally holds all the work since 7 Nov.
+* **Commits:** [5e17e93](https://github.com/maddaliabhinav/LedgerLine/commit/5e17e93d21e750cf5b8c22ac3fa3ced73f98b0a2), merged into `main` in [13edbce](https://github.com/maddaliabhinav/LedgerLine/commit/13edbcec7b785a626ac734678e5a007f1a1f19fb) and [aff52a0](https://github.com/maddaliabhinav/LedgerLine/commit/aff52a0458000b3d08eefc503ee0f7b2f00b47ed).
+
+#### P22 · 12 Nov
+* **Asked** (exact): "okay completed"
+* **Result:** The AI checked GitHub: the new branch was pushed, `main` held everything since 7 Nov, and the stray web edits on `main` were gone.
+
+#### P23 · 12 Nov · Putting it online
+* **Asked** (exact): "i want to live this project / suggest me the ways to deploy the complete project"
+* **Result:** Four ways compared (Render Blueprint, a Render web service with a Neon database, Railway, a server of our own with Docker), with the current free-tier limits looked up. Recommended Render with Neon, so the database outlives Render's 30-day free database.
+
+#### P24 · 12 Nov · Vercel
+* **Asked** (exact): "i have deplpoyed my project in vercel / gettin gthese errors" (the error text did not come through)
+* **Result:** The AI asked for the error, and listed what LedgerLine needs on Vercel: an outside PostgreSQL (Neon, with its direct, non-pooled connection string), `APP_ENV`, `SECRET_KEY` and `LEDGER_SIGNING_KEY`, and `migrate` and `seed` run once, because Vercel runs no start command.
+
+#### P25 · 13 Nov
+* **Asked** (exact): "what are commands are used to run frontend and backed"
+* **Result:** One command runs both: the FastAPI backend serves the plain HTML and JavaScript frontend itself (`python -m uvicorn app.main:app --reload`, then http://localhost:8000).
+
+#### P26 · 13 Nov
+* **Asked** (exact): "what are the tech stacks used in this project"
+* **Result:** The stack, layer by layer, from `requirements.txt`, the Dockerfile and the code.
+
+#### P27 · 13 Nov
+* **Asked** (exact): "how to deploy this project online s=give simple language for live"
+* **Result:** The Render Blueprint steps in plain words, with what to check afterwards.
+
+#### P28 · 13 Nov
+* **Asked** (exact): "database how to connect"
+* **Result:** On Render, nothing to do. On Vercel, a Neon database and four settings, and a warning: create the tables with the same `LEDGER_SIGNING_KEY` as the live site, or its proof rejects the first entries.
+
+#### P29 · 13 Nov · Auditors without an approval step
+* **Asked** (exact): "when the user like accountant or main admin or auditor creates a new account / remove the approval for it / create account directly"
+* **Our answer to the AI's question** (whether auditors should sign up instantly, which would let anyone on the internet read every account, or be created by an administrator): administrators create auditors.
+* **Result:** Sign-up makes account holders only (`"role": "auditor"` is a 422); the auditor request queue, its API and the seeded waiting request are gone; an auditor an administrator creates signs in at once. Requests decided before the change stay as guarded history. `tests/test_staff_access.py` replaces the request tests; mutations M38 and M39 aimed at the new rule, M40 and M41 retired with the code they tested (74 in all); attack 12 rewritten.
+* **Commits:** the ones that add this entry.

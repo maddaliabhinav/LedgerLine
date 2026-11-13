@@ -28,11 +28,9 @@ Version 2 (`app/migrations/002_access_requests.sql`) adds the rules for **who ma
 
 | Rule | Where | What it means |
 |---|---|---|
-| Only auditor access can be requested | `access_requests.role CHECK (role = 'auditor')` | Nobody can even *ask* for admin. |
-| One waiting request per name | `access_requests_one_pending` (unique index) | A waiting request reserves its username. |
-| Decided once, by an admin, on the record | `access_requests_guard` (`LL012`) | A request starts pending; the only allowed change is a decision whose `ACCESS_DECISION` journal entry was written by an administrator; after that it never changes. |
 | Roles never change | `users_guard` (`LL013`) | `UPDATE users SET role = 'admin'` is refused. A new role means a new user, on the record. |
-| Every user on the record | `users_created_on_record`, deferred to COMMIT (`LL014`) | Each new user needs a `USER_CREATED` entry with the same role, in the same transaction; an auditor or admin only from another administrator (or the server's own command line, for the seed). |
+| Every user on the record | `users_created_on_record`, deferred to COMMIT (`LL014`) | Each new user needs a `USER_CREATED` entry with the same role, in the same transaction; an auditor or admin only from another administrator (or the server's own command line, for the seed). This is the rule that makes "only an administrator creates auditors" true in the database itself. |
+| Old auditor requests stay as they were | `access_requests` with its `CHECK (role = 'auditor')` and `access_requests_guard` (`LL012`) | Until 13 Nov 2026 sign-up could file a request for auditor access, which an administrator decided once, on the record. That step is gone; the table keeps its history and its guards, so an old decision can never be faked, changed or made twice. |
 
 Version 3 (`app/migrations/003_main_admin.sql`) adds **the main administrator**: any administrator does the daily work, but only the main administrator decides who is an administrator.
 
@@ -70,7 +68,7 @@ System accounts: `SYS-EXTERNAL` (the outside world; the only account allowed bel
 * `journal.py`: `append_entry()`, the **only** writer of journal rows and postings. It locks the chain head, computes each posting's expected balance, hashes, signs, inserts and advances the head.
 * `accounts.py`: `lock()` takes `SELECT … FOR UPDATE` on customer accounts **in ascending id order**.
 * `idempotency.py`: claim (INSERT first), complete (store the exact response), answer duplicates.
-* `proof.py`: replays the whole journal and runs 15 checks. `statements.py`: statements. `admin_ops.py`: open, freeze, overdraft, users (administrators only from the main administrator), auditor requests (`request_auditor_access`, `decide_access_request`) and `change_password`. `details.py`: personal details (`submit` by the person, `decide` by another administrator). `ai_notes.py`: puts AI output on the record.
+* `proof.py`: replays the whole journal and runs 15 checks. `statements.py`: statements. `admin_ops.py`: open, freeze, overdraft, users (auditors only from an administrator, administrators only from the main administrator) and `change_password`. `details.py`: personal details (`submit` by the person, `decide` by another administrator). `ai_notes.py`: puts AI output on the record.
 * `app/signing.py`: canonical JSON, SHA-256 and Ed25519.
 
 The shape of every money request (top of `engine.py`):
@@ -91,9 +89,9 @@ COMMIT                                 (deferred double-entry check runs here)
 ## Phase 3: auth and the API (`app/api/`, `app/security.py`, `app/main.py`)
 
 * Passwords: stdlib scrypt. Tokens: HS256 JWT with `exp` and a `tv` (token version). `POST /api/me/password` changes your own password (current one required, wrong guesses throttled like sign-in) and moves `tv` on, which ends every other session.
-* Public sign-up (`POST /api/auth/register`) offers two account types. **Holder** → `admin_ops.register_holder`: an account holder with one ₹0 account, signed in at once (the role is hard-coded in the SQL). **Auditor** → `admin_ops.request_auditor_access`: a row in `access_requests`, not a user, so there is nothing to sign in with (`403 APPROVAL_PENDING`). `role: "admin"` and unknown fields get a 422, and sign-ups are rate-limited per address.
-* An admin decides on the Users page (`POST /api/access-requests/{id}/approve|decline` → `admin_ops.decide_access_request`): lock the request row (`FOR UPDATE`), check it is still pending, journal `ACCESS_DECISION`, and on approval create the auditor from the stored request plus a `USER_CREATED` entry pointing back at the decision. A second decision gets `409 ALREADY_DECIDED`.
-* Usernames are unique across users **and** waiting requests: `_claim_username` takes one per-name advisory lock on every path that hands out a name, then checks both tables.
+* Public sign-up (`POST /api/auth/register`) makes account holders only: `admin_ops.register_holder`, one ₹0 account, signed in at once (the role is hard-coded in the SQL). `role: "auditor"`, `"admin"` and unknown fields get a 422 (`SignUpIn.holders_only`), and sign-ups are rate-limited per address.
+* Auditors and administrators are created on the Users page (`POST /api/users` → `admin_ops.create_user`, admin role required; administrators only by the main administrator). They can sign in straight away: there is no request to approve.
+* Usernames: `_claim_username` takes one per-name advisory lock on every path that hands out a name, then checks it is free (`users.username UNIQUE` is the backstop).
 * `deps.current_user` re-reads the user **from the database on every request**: role, `is_active`, `tv`. A demoted or deactivated user's token stops working at once, and a forged `role` claim does nothing.
 * Money routes do **not** pre-filter by role. The engine decides, so every refusal lands in the journal.
 * `routes_details.py`: personal details. `GET/PUT /api/me/details` for your own; `GET /api/users/{u}/details` and verify / send back for administrators only (auditors see just the status in `GET /api/users`).
@@ -114,13 +112,13 @@ COMMIT                                 (deferred double-entry check runs here)
 
 ## Phase 6: the UI (`static/`)
 
-Vanilla JS, no build step. It never uses `innerHTML` for data. Each form gets a fresh idempotency key, and retries reuse it. The **Race Lab** (holder) fires real concurrent requests. The **Proof** page draws a seal from the live chain-head hash: change any past entry and the pattern changes. **Users** (People) shows roles, access, auditor requests and the personal-details queue; buttons appear only where the server would allow the action. **My details** and **Change password** are open to every role. On every page load the UI asks the server who you are (`/api/me`), so a stale saved session never shows the wrong buttons.
+Vanilla JS, no build step. It never uses `innerHTML` for data. Each form gets a fresh idempotency key, and retries reuse it. The **Race Lab** (holder) fires real concurrent requests. The **Proof** page draws a seal from the live chain-head hash: change any past entry and the pattern changes. **Users** (People) shows roles and access, the form where an administrator creates holders, auditors and (main administrator only) administrators, and the personal-details queue; buttons appear only where the server would allow the action. **My details** and **Change password** are open to every role. On every page load the UI asks the server who you are (`/api/me`), so a stale saved session never shows the wrong buttons.
 
 ## Phase 7: tests that really race (`tests/`, `tools/`)
 
 * `hooks.race_window(after_balance_check=0.3)` makes the dangerous interleaving happen every time. `hooks.faults(...)` crashes a request between debit and credit. One test kills the database session mid-transfer.
 * Race tests assert the outcome **and** that the database backstop never fired.
-* `tools/mutation_check.py` removes 76 locks and checks one by one; every removal fails a test (`docs/MUTATION_REPORT.md`). A mutation switches a check off; it never just breaks the code around it (PROMPTS.md entry 12).
+* `tools/mutation_check.py` removes 74 locks and checks one by one; every removal fails a test (`docs/MUTATION_REPORT.md`). A mutation switches a check off; it never just breaks the code around it (PROMPTS.md entry 12).
 * `tools/attack.py` runs 17 of the judges' attacks against a live URL, and can be run twice in a row (PROMPTS.md entry 13).
 
 ---
@@ -159,7 +157,7 @@ Then:
 python -m app.cli migrate            # schema + signed GENESIS entry (on an existing database: upgrades it)
 python -m app.cli seed               # demo people and accounts (prints them)
 python -m uvicorn app.main:app --reload   # open http://localhost:8000
-python -m pytest                     # 166 tests, about 30 s
+python -m pytest                     # 161 tests, about 30 s
 python tools/attack.py               # in a second terminal, while the server runs
 python tools/mutation_check.py      # about 22 minutes; proves the tests bite
 ```
@@ -228,17 +226,17 @@ External money and held money are real accounts, so conservation is one checkabl
 **"Can the AI move money?"**
 No. Sentinel only reads and scores. Above the threshold, money waits in suspense for a person. An architecture test fails if the AI package ever imports money code. The LLM writes words only: no memos in, numbers checked out.
 
-**"Can anyone make themselves an admin from the Create user page?"**
-No. `SignUpIn.role` accepts only `holder` or `auditor`, so `admin` gets a 422. A holder sign-up inserts the role `'holder'` as a constant. An auditor sign-up creates a *request*, and only an administrator can turn it into a user. Underneath, PostgreSQL refuses a request for admin (`CHECK`) and, at commit, any auditor not created on the record by another administrator and any administrator not created by the main administrator (`LL014`). Tests: `tests/test_signup.py`, `tests/test_access_requests.py`, `tests/test_main_admin.py`; mutations M36, M42, M46, M53.
+**"Can anyone make themselves an admin, or an auditor, from the Create user page?"**
+No. `SignUpIn.role` accepts only `holder`, so `auditor` or `admin` gets a 422, and a holder sign-up inserts the role `'holder'` as a constant. Auditors and administrators are created only by an administrator on the Users page (administrators only by the main administrator). Underneath, PostgreSQL refuses, at commit, any auditor not created on the record by another administrator and any administrator not created by the main administrator (`LL014`). Tests: `tests/test_signup.py`, `tests/test_staff_access.py`, `tests/test_main_admin.py`; mutations M36, M38, M39, M46, M53.
 
-**"What if two admins approve the same request at the same moment?"**
-`decide_access_request` locks the request row with `SELECT … FOR UPDATE` before checking it is pending. The second admin waits for the first to commit, then sees `approved` and gets `409 ALREADY_DECIDED`: one auditor, one decision entry. The test forces this with `hooks.race_window(after_request_check=0.3)`; delete `FOR UPDATE` and it fails (M40). Even past the app, the database keeps decisions final (`LL012`, M44).
+**"Auditor sign-up used to need an administrator's approval. Why did you remove it?"**
+An approval queue for strangers on the internet adds nothing an administrator creating the account does not already give: either way an administrator decides who becomes an auditor, on the record. Without the queue there is no waiting, no request table to keep consistent with the users table, and no public form that can even ask for staff access. Requests decided before the change stay in the database, still guarded (`LL012`), and the proof still checks them.
 
-**"Could an auditor approve someone, or approve themselves?"**
-The endpoint needs the admin role, re-read from the database on every request. A pending requester has no account at all, so there is nothing to approve *with*. And the database refuses any decision whose journal entry was not written by an administrator (`LL012`, M38 and M43).
+**"Could an auditor or a holder create an auditor?"**
+No. `POST /api/users` needs the admin role, re-read from the database on every request (`403` otherwise), and the database refuses an auditor whose `USER_CREATED` entry was not written by another administrator (`LL014`, M39).
 
 **"Why a main administrator? Can a second admin take over?"**
-Approvals should not wait for one person, so every administrator can deposit, approve, reverse and decide auditor requests. Deciding *who is an administrator* is different: it is how an insider would build a backdoor. So only the main administrator creates administrators or removes their access (`403 MAIN_ADMIN_ONLY` for anyone else), and nobody can remove the main administrator (`403 MAIN_ADMIN_PROTECTED`). PostgreSQL enforces the same (`LL013`–`LL016`), and the proof compares the flag with the signed record. Tests: `tests/test_main_admin.py`; attack 14 in `tools/attack.py`; mutations M48–M59.
+Approvals should not wait for one person, so every administrator can deposit, approve, reverse and create holders and auditors. Deciding *who is an administrator* is different: it is how an insider would build a backdoor. So only the main administrator creates administrators or removes their access (`403 MAIN_ADMIN_ONLY` for anyone else), and nobody can remove the main administrator (`403 MAIN_ADMIN_PROTECTED`). PostgreSQL enforces the same (`LL013`–`LL016`), and the proof compares the flag with the signed record. Tests: `tests/test_main_admin.py`; attack 14 in `tools/attack.py`; mutations M48–M59.
 
 **"What happens to an existing database when you upgrade?"**
 `migrate` makes the first *active* administrator the main one and appends a signed `MAIN_ADMIN` entry saying so. Administrators that another administrator created before that entry were legal at the time, so the proof judges each one by the rule in force when it was created. Without that, the proof would have failed on honest history: PROMPTS.md entry 10.

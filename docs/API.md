@@ -27,13 +27,11 @@ Every endpoint the server has is in this table. The server decides on every requ
 | `POST /api/accounts/{no}/freeze`, `/unfreeze`, `/close` | ✓ | – | – | none (stops movement) |
 | `POST /api/accounts/{no}/overdraft` | ✓ | – | – | none (moves the floor to −limit, max ₹50,000) |
 | `GET /api/users` | ✓ | – | ✓ | read (who has access, and only the *status* of their personal details) |
-| `POST /api/users`, `/api/users/{u}/deactivate`, `/activate` | ✓ holders and auditors; **administrators: main admin only** | – | – | none |
+| `POST /api/users`, `/api/users/{u}/deactivate`, `/activate` | ✓ holders and auditors; **administrators: main admin only** | – | – | none (the only way to make an auditor or administrator) |
 | `GET /api/me/details`, `PUT /api/me/details` (your own personal details) | ✓ | ✓ | ✓ | none |
 | `POST /api/me/password` (your own password) | ✓ | ✓ | ✓ | none |
 | `GET /api/users/{u}/details` (someone else's) | ✓ | – | – (status only, in `GET /api/users`) | read |
 | `POST /api/users/{u}/details/verify`, `/return` | ✓ (never your own) | – | – | none (the decision is journaled) |
-| `GET /api/access-requests` | ✓ | – | ✓ | read |
-| `POST /api/access-requests/{id}/approve`, `/decline` | ✓ | – | – | none (creates the auditor on approval; the decision is journaled) |
 | `GET /api/accounts`, `/api/accounts/{no}`, `/statement` | all | own only | all | read |
 | `GET /api/payees/{no}` | ✓ | ✓ | ✓ | read (name and status only) |
 | `GET /api/reviews`, `POST /api/reviews/{seq}/ai-note` | ✓ | – | ✓ | none (an AI note is journaled) |
@@ -41,7 +39,7 @@ Every endpoint the server has is in this table. The server decides on every requ
 | `POST /api/audit/reconciliation` | ✓ | – | ✓ | none (the summary is journaled) |
 | `GET /api/entries/{seq}` | ✓ | entries touching own accounts | ✓ | read + hash/signature check |
 | `GET /api/public-key`, `GET /api/health` | public | public | public | read |
-| `POST /api/auth/register` (sign-up) | public | public | public | none: an account holder with one ₹0 account, or a request for auditor access |
+| `POST /api/auth/register` (sign-up) | public | public | public | none: an account holder with one ₹0 account, nothing else |
 
 ---
 
@@ -50,16 +48,14 @@ Every endpoint the server has is in this table. The server decides on every requ
 ### `POST /api/auth/login`
 Anyone. Body `{"username": "priya", "password": "…"}`.
 `200` → `{"access_token", "token_type": "bearer", "expires_in": 3600, "user": {"username", "name", "role", "main_admin", "permissions": [...]}}`. `main_admin` is `true` only for the main administrator.
-`401 BAD_CREDENTIALS`. `429 TOO_MANY_REQUESTS` after 10 failures in 5 minutes from one IP.
-`403 APPROVAL_PENDING` or `403 ACCESS_DECLINED` when the username belongs to an auditor request (not a user) and the password matches it: no token. A wrong password gets the usual `401`, so nobody learns a request exists without its password.
+`401 BAD_CREDENTIALS` for a wrong password and an unknown username alike. `429 TOO_MANY_REQUESTS` after 10 failures in 5 minutes from one IP.
 
 ### `POST /api/auth/register`
-Anyone (public sign-up, the "Create user" tab on the home page). Body `{"username": "kavya", "display_name": "Kavya Reddy", "password": "at-least-10-chars", "role": "holder"}`. `role` is `"holder"` (the default) or `"auditor"`; anything else, `"admin"` included, returns `422`, as does any unknown field such as `balance`.
+Anyone (public sign-up, the "Create user" tab on the home page). Body `{"username": "kavya", "display_name": "Kavya Reddy", "password": "at-least-10-chars"}`. An optional `"role"` may only be `"holder"`: `"auditor"`, `"admin"` or anything else returns `422` ("sign-up creates account holders only; an administrator creates auditor and administrator accounts"), as does any unknown field such as `balance`.
 
-* `"holder"` → `201`: creates an **account holder** with one account named "Main account" at **₹0.00**, and signs them in. Same shape as login, plus `"account": {"account_no", "name", "balance"}`. The new user and account are journaled (`USER_CREATED`, `ACCOUNT_OPENED`, marked `"via": "self-service sign-up"`).
-* `"auditor"` → `202`: files a **request** and creates no user. No token: `{"status": "pending", "message", "request": {"id", "username", "name", "role": "auditor", "status": "pending", "requested_at", ...}}`. Signing in answers `403 APPROVAL_PENDING` until an administrator decides.
+`201` → creates an **account holder** with one account named "Main account" at **₹0.00**, and signs them in. Same shape as login, plus `"account": {"account_no", "name", "balance"}`. The new user and account are journaled (`USER_CREATED`, `ACCOUNT_OPENED`, marked `"via": "self-service sign-up"`).
 
-`409` username taken (by a user or by a request still waiting) · `422` invalid input · `429 TOO_MANY_REQUESTS` after 10 sign-up attempts in 10 minutes from one address. Administrators are created only by the main administrator (`POST /api/users`).
+`409` username taken · `422` invalid input · `429 TOO_MANY_REQUESTS` after 10 sign-up attempts in 10 minutes from one address. Auditors are created by an administrator, and administrators only by the main administrator, both with `POST /api/users`: they can sign in straight away, with no request to approve. (Until 13 Nov 2026 sign-up could file a *request* for auditor access, decided by an administrator; that step was removed, and its old decisions remain in the journal as `ACCESS_DECISION` entries.)
 
 ### `POST /api/auth/logout`
 Any signed-in user. Revokes **all** of that user's tokens. `200 {"ok": true}`.
@@ -157,21 +153,14 @@ The basic details a bank keeps: date of birth, mobile, email, address, occupatio
 * `POST /api/users/{u}/details/verify` (admin), body `{"version": 2}`: verifies exactly that version. `POST /api/users/{u}/details/return` (admin), body `{"version": 2, "note": "PIN code does not match the address proof"}`: sends it back; the note (required, ≤200 characters) is shown to the person and stored with the details, not in the journal. Both `200` → the new view. `403 OWN_DETAILS` for your own details · `404` nothing given yet · `409 DETAILS_CHANGED` the person saved a newer version meanwhile (open it again) · `409 ALREADY_DECIDED` that version was already verified or sent back.
 * The database enforces the same (`LL017`): a new version needs a `DETAILS_SUBMITTED` entry by the person; a decision needs a `DETAILS_VERIFIED` / `DETAILS_RETURNED` entry by an administrator who is not the person, for that version; a change never keeps an old decision; details are never deleted (`LL010`).
 
-## Auditor requests (from sign-up)
-
-* `GET /api/access-requests?state=pending|decided` (admin, auditor): waiting requests oldest first, or the last 100 decisions with who decided, when, the note and the `decision_seq` journal entry. Never a password hash.
-* `POST /api/access-requests/{id}/approve` (admin), body `{"note": "…"}` (optional, ≤140 characters, recorded): creates the **auditor** from the stored request (never from this body) and journals `ACCESS_DECISION` followed by `USER_CREATED`, which points back at the decision (`ref_seq`). `200` → `{"request", "user": {"username", "name", "role": "auditor"}, "entry": {"seq"}}`.
-* `POST /api/access-requests/{id}/decline` (admin), same body: journals `ACCESS_DECISION` and creates no user. `200` → `{"request", "user": null, "entry"}`. The person can still ask again later; that is a new request and a new decision.
-* A request is decided **once**. The second decision, including two administrators clicking at the same moment, gets `409 ALREADY_DECIDED`. `404` for an unknown id, `403` for anyone but an administrator. The database refuses a decision that is not journaled by an administrator, or a second one (`LL012`).
-
 ## Review and audit (admin, auditor)
 
 * `GET /api/reviews?state=pending|decided|all`: held payments with Sentinel's score, reasons and features, the latest AI note, and the decision if any.
 * `POST /api/reviews/{seq}/ai-note`: asks the LLM (if configured) for a reviewer note. No money moves; the note is journaled as `AI_NOTE` with the model name. The same facts reuse the cached note.
 * `GET /api/audit/proof`: replays the whole journal and returns 15 checks (chain, signatures, head, double entry, replay, floors, stored balances, conservation, suspense, single decisions, exactly-once, refusal balances, access, personal details, backstop) plus totals. *Access* checks that every user has exactly one `USER_CREATED` entry with the role it has now, that every auditor was created by another administrator, that the main-administrator flag matches the signed record, and that every administrator was created by the rule in force at the time (by another administrator before the upgrade's `MAIN_ADMIN` entry, by the main administrator after it). *Personal details* replays every `DETAILS_*` entry (each version from its owner, one after another; each decision from another administrator, once, on the current version) and compares the result with the stored details.
 * `POST /api/audit/reconciliation`: the proof plus a plain-English summary (LLM if configured, template otherwise), journaled.
-* `GET /api/audit/journal?kind=&status=&account=&before_seq=&limit=`: the hash-chained journal. Besides money entries, `kind` can be `USER_CREATED`, `USER_STATUS`, `ACCESS_DECISION`, `MAIN_ADMIN`, `DETAILS_SUBMITTED`, `DETAILS_VERIFIED`, `DETAILS_RETURNED`, `PASSWORD_CHANGED`, `ACCOUNT_OPENED`, `ACCOUNT_STATUS`, `OVERDRAFT_LIMIT`, `AI_NOTE` or `GENESIS`. None of them carries a password, a hash or a personal detail.
-* `GET /api/audit/flags`: held payments, elevated scores, authorisation refusals, database backstops (should be empty), reversals, control changes (freezes, overdraft limits, access changes, auditor-access decisions, new administrators and the main-administrator switch), large deposits, key reuse.
+* `GET /api/audit/journal?kind=&status=&account=&before_seq=&limit=`: the hash-chained journal. Besides money entries, `kind` can be `USER_CREATED`, `USER_STATUS`, `ACCESS_DECISION` (decisions on auditor requests made before 13 Nov 2026), `MAIN_ADMIN`, `DETAILS_SUBMITTED`, `DETAILS_VERIFIED`, `DETAILS_RETURNED`, `PASSWORD_CHANGED`, `ACCOUNT_OPENED`, `ACCOUNT_STATUS`, `OVERDRAFT_LIMIT`, `AI_NOTE` or `GENESIS`. None of them carries a password, a hash or a personal detail.
+* `GET /api/audit/flags`: held payments, elevated scores, authorisation refusals, database backstops (should be empty), reversals, control changes (freezes, overdraft limits, access changes, any old auditor-access decisions, new administrators and the main-administrator switch), large deposits, key reuse.
 * `GET /api/audit/duplicates`: every replayed request, key reuse and in-flight retry, with the original entry.
 * `GET /api/audit/export`: evidence bundle for `python tools/verify_bundle.py bundle.json --public-key <key>`.
 
@@ -187,7 +176,6 @@ The basic details a bank keeps: date of birth, mobile, email, address, occupatio
 |---|---|---|:-:|
 | 401 | `UNAUTHORIZED`, `TOKEN_INVALID`, `TOKEN_EXPIRED`, `SESSION_REVOKED`, `BAD_CREDENTIALS` | sign in again | – |
 | 403 | `ROLE_NOT_PERMITTED`, `NOT_ACCOUNT_OWNER` | not allowed | ✓ |
-| 403 | `APPROVAL_PENDING`, `ACCESS_DECLINED` | sign-in for an auditor request that is waiting / was declined (right password only) | – |
 | 403 | `FORBIDDEN` | an admin-only or staff-only endpoint | – |
 | 403 | `OWN_DETAILS` | nobody verifies or sends back their own personal details | – |
 | 403 | `WRONG_PASSWORD` | the current password given to change it is wrong (you stay signed in) | – |
@@ -196,7 +184,7 @@ The basic details a bank keeps: date of birth, mobile, email, address, occupatio
 | 409 | `INSUFFICIENT_FUNDS`, `DAILY_LIMIT_EXCEEDED`, `ACCOUNT_NOT_ACTIVE`, `DESTINATION_NOT_ACTIVE`, `HOLD_ALREADY_DECIDED`, `ALREADY_REVERSED` | refused by a business rule | ✓ |
 | 409 | `INTEGRITY_BACKSTOP` | the database refused a write the app attempted (a bug signal); nothing moved | ✓ |
 | 409 | `IDEMPOTENCY_KEY_REUSED`, `REQUEST_IN_PROGRESS` | key misuse / first request still running; nothing moved | in the duplicates log |
-| 409 | `ALREADY_DECIDED`, `CONFLICT` | auditor request or version of personal details already decided / username taken, or another state conflict | – |
+| 409 | `ALREADY_DECIDED`, `CONFLICT` | that version of the personal details was already decided / username taken, or another state conflict | – |
 | 409 | `DETAILS_CHANGED` | the personal details changed since you opened them; check the new version | – |
 | 422 | `VALIDATION_FAILED`, `SAME_ACCOUNT`, `DESTINATION_NOT_ALLOWED`, `NOT_REVERSIBLE`, `SAME_PASSWORD` | malformed or impossible | `SAME_ACCOUNT`, `DESTINATION_NOT_ALLOWED`, `NOT_REVERSIBLE` ✓ |
 | 428 | `IDEMPOTENCY_KEY_REQUIRED` | send an Idempotency-Key | – |
@@ -218,17 +206,16 @@ curl -i $URL/api/transfers -H "Authorization: Bearer $TOKEN" -H 'content-type: a
 for i in 1 2; do curl -s $URL/api/withdrawals -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
   -H "Idempotency-Key: race-$i-$RANDOM" -d '{"account":"LL-1001","amount":"40000"}' & done; wait
 
-# ask for auditor access (202, no token), then try to sign in (403 APPROVAL_PENDING)
+# sign up as an auditor: 422, only an administrator creates auditors
 curl -s $URL/api/auth/register -H 'content-type: application/json' \
   -d '{"username":"kavya","display_name":"Kavya Reddy","password":"kavya-password-1","role":"auditor"}'
-curl -s $URL/api/auth/login -H 'content-type: application/json' -d '{"username":"kavya","password":"kavya-password-1"}'
 
-# as admin: see the queue, approve request 1 with a note (the seeded request from "meera" is waiting too)
+# as admin: create the auditor directly; she can sign in straight away
 ADMIN=$(curl -s $URL/api/auth/login -H 'content-type: application/json' \
   -d '{"username":"admin","password":"LedgerAdmin#2026"}' | python -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')
-curl -s $URL/api/access-requests -H "Authorization: Bearer $ADMIN"
-curl -s $URL/api/access-requests/1/approve -H "Authorization: Bearer $ADMIN" -H 'content-type: application/json' \
-  -d '{"note":"confirmed with the audit firm"}'
+curl -s $URL/api/users -H "Authorization: Bearer $ADMIN" -H 'content-type: application/json' \
+  -d '{"username":"kavya","display_name":"Kavya Reddy","role":"auditor","password":"kavya-password-1"}'
+curl -s $URL/api/auth/login -H 'content-type: application/json' -d '{"username":"kavya","password":"kavya-password-1"}'
 
 # as the main administrator: create a second administrator
 curl -s $URL/api/users -H "Authorization: Bearer $ADMIN" -H 'content-type: application/json' \
